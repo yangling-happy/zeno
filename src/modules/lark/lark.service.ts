@@ -21,6 +21,9 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private client: Lark.Client | null = null;
   private wsClient: Lark.WSClient | null = null;
   private eventDispatcher: Lark.EventDispatcher | null = null;
+  private readonly processedMessageTimestamps = new Map<string, number>();
+  private readonly processedMessageTtlMs = 10 * 60 * 1000;
+  private readonly processedMessageMaxSize = 5000;
 
   constructor(
     private readonly configService: ConfigService,
@@ -43,10 +46,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.client = new Lark.Client({ appId, appSecret });
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
-      'im.message.receive_v1': async (data) => {
+      'im.message.receive_v1': (data) => {
         const message = data?.message as LarkWebhookMessage | undefined;
 
         if (!message) {
+          return;
+        }
+
+        if (this.isDuplicateMessage(message.message_id)) {
+          this.logger.warn(
+            `♻️ 检测到重复投递，已跳过处理: ${message.message_id}`,
+          );
           return;
         }
 
@@ -57,12 +67,8 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
         this.logger.log(`📩 收到消息: ${text}`);
 
-        try {
-          const reply = await this.aiService.chat(text);
-          await this.reply(message.message_id, reply);
-        } catch (error) {
-          this.logger.error('❌ 处理飞书消息失败:', error);
-        }
+        // 这里不要阻塞事件回调，避免因为 AI 调用耗时导致飞书重试同一条事件。
+        void this.processMessage(message, text);
       },
     });
 
@@ -98,6 +104,56 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       .catch((err) => {
         this.logger.error('❌ 飞书长连接启动失败:', err);
       });
+  }
+
+  private isDuplicateMessage(messageId?: string): boolean {
+    if (!messageId) {
+      return false;
+    }
+
+    this.cleanupProcessedMessages();
+
+    if (this.processedMessageTimestamps.has(messageId)) {
+      return true;
+    }
+
+    this.processedMessageTimestamps.set(messageId, Date.now());
+    this.trimProcessedMessages();
+    return false;
+  }
+
+  private cleanupProcessedMessages() {
+    const now = Date.now();
+    for (const [id, ts] of this.processedMessageTimestamps.entries()) {
+      if (now - ts > this.processedMessageTtlMs) {
+        this.processedMessageTimestamps.delete(id);
+      }
+    }
+  }
+
+  private trimProcessedMessages() {
+    while (
+      this.processedMessageTimestamps.size > this.processedMessageMaxSize
+    ) {
+      const oldest = this.processedMessageTimestamps.keys().next().value;
+      if (!oldest) {
+        break;
+      }
+      this.processedMessageTimestamps.delete(oldest);
+    }
+  }
+
+  private async processMessage(message: LarkWebhookMessage, text: string) {
+    try {
+      const reply = await this.aiService.chat(text);
+      await this.reply(message.message_id, reply);
+    } catch (error) {
+      // 处理失败时释放去重标记，允许飞书重试再次触发处理。
+      if (message.message_id) {
+        this.processedMessageTimestamps.delete(message.message_id);
+      }
+      this.logger.error('❌ 处理飞书消息失败:', error);
+    }
   }
 
   private async reply(messageId: string | undefined, text: string) {
