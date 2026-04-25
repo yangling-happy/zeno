@@ -1,7 +1,8 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { AiService } from '../ai/ai.service';
+import { AgentService } from '../agent/agent.service';
 import { LarkService } from './lark.service';
+import { AiService } from '../ai/ai.service';
 
 let registeredHandlers: Record<
   string,
@@ -79,7 +80,13 @@ describe('LarkService', () => {
   });
 
   it('should process received message and reply via message_id', async () => {
-    const aiChatMock = jest.fn().mockResolvedValue('豆包回复');
+    const agentRunMock = jest.fn().mockResolvedValue({
+      intent: 'qa',
+      confidence: 0.9,
+      personaId: 'zeno',
+      response: '豆包回复',
+      trace: ['normalize_input', 'intent_classifier', 'chat_response'],
+    });
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -95,9 +102,9 @@ describe('LarkService', () => {
           },
         },
         {
-          provide: AiService,
+          provide: AgentService,
           useValue: {
-            chat: aiChatMock,
+            run: agentRunMock,
           },
         },
       ],
@@ -114,7 +121,11 @@ describe('LarkService', () => {
     });
     await flushPromises();
 
-    expect(aiChatMock).toHaveBeenCalledWith('你好');
+    expect(agentRunMock).toHaveBeenCalledWith({
+      text: '你好',
+      userId: undefined,
+      channel: 'lark',
+    });
     expect(replyMock).toHaveBeenCalledWith({
       path: {
         message_id: 'om_test_msg_id',
@@ -127,7 +138,13 @@ describe('LarkService', () => {
   });
 
   it('should skip duplicated message with same message_id', async () => {
-    const aiChatMock = jest.fn().mockResolvedValue('去重回复');
+    const agentRunMock = jest.fn().mockResolvedValue({
+      intent: 'qa',
+      confidence: 0.9,
+      personaId: 'zeno',
+      response: '去重回复',
+      trace: ['normalize_input', 'intent_classifier', 'chat_response'],
+    });
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -143,9 +160,9 @@ describe('LarkService', () => {
           },
         },
         {
-          provide: AiService,
+          provide: AgentService,
           useValue: {
-            chat: aiChatMock,
+            run: agentRunMock,
           },
         },
       ],
@@ -168,7 +185,7 @@ describe('LarkService', () => {
     });
     await flushPromises();
 
-    expect(aiChatMock).toHaveBeenCalledTimes(1);
+    expect(agentRunMock).toHaveBeenCalledTimes(1);
     expect(replyMock).toHaveBeenCalledTimes(1);
   });
 
@@ -183,9 +200,9 @@ describe('LarkService', () => {
           },
         },
         {
-          provide: AiService,
+          provide: AgentService,
           useValue: {
-            chat: jest.fn(),
+            run: jest.fn(),
           },
         },
       ],
@@ -212,9 +229,9 @@ describe('LarkService', () => {
           },
         },
         {
-          provide: AiService,
+          provide: AgentService,
           useValue: {
-            chat: jest.fn(),
+            run: jest.fn(),
           },
         },
       ],

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { AiService } from '../ai/ai.service';
+import { AgentService } from '../agent/agent.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -27,7 +27,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly aiService: AiService,
+    private readonly agentService: AgentService,
   ) {}
 
   onModuleInit() {
@@ -145,8 +145,15 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
   private async processMessage(message: LarkWebhookMessage, text: string) {
     try {
-      const reply = await this.aiService.chat(text);
-      await this.reply(message.message_id, reply);
+      const result = await this.agentService.run({
+        text,
+        userId: message.open_id,
+        channel: 'lark',
+      });
+      this.logger.log(
+        `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
+      );
+      await this.reply(message.message_id, result.response);
     } catch (error) {
       // 处理失败时释放去重标记，允许飞书重试再次触发处理。
       if (message.message_id) {
