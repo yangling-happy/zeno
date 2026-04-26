@@ -9,6 +9,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
 import { LarkDocService } from './doc/lark-doc.service';
+import { LarkSlidesService } from './slides/lark-slides.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -27,12 +28,14 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly processedMessageTtlMs = 10 * 60 * 1000;
   private readonly processedMessageMaxSize = 5000;
   private readonly docService: LarkDocService;
+  private readonly slidesService: LarkSlidesService;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly agentService: AgentService,
   ) {
     this.docService = new LarkDocService(configService);
+    this.slidesService = new LarkSlidesService(configService);
   }
 
   onModuleInit() {
@@ -50,6 +53,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
     this.client = new Lark.Client({ appId, appSecret });
     this.docService.initClient(this.client);
+    this.slidesService.initClient(this.client);
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => {
@@ -241,7 +245,9 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
 
         case 'LARK_PRESENT_CREATE': {
-          const present = await this.createPresentation(action.params.title);
+          const present = await this.slidesService.createPresentation(
+            action.params.title,
+          );
           return `🖼️ 演示内容已创建：${present.url}`;
         }
 
@@ -255,7 +261,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
         case 'LARK_DOC_PRESENT_LINK': {
           const doc = await this.docService.createDocument(action.params.title);
-          const present = await this.createPresentation(
+          const present = await this.slidesService.createPresentation(
             `${action.params.title}-演示`,
           );
 
@@ -280,51 +286,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`❌ 执行动作失败: ${action.type}`, error as Error);
       return `⚠️ 已识别出动作 ${action.type}，但执行失败：${(error as Error).message}`;
     }
-  }
-
-  private async createPresentation(
-    title: string,
-  ): Promise<{ token: string; url: string }> {
-    const wikiSpaceId = this.configService.get<string>('LARK_WIKI_SPACE_ID');
-
-    if (wikiSpaceId) {
-      const response = await (this.client as any).wiki.v2.spaceNode.create({
-        path: {
-          space_id: wikiSpaceId,
-        },
-        data: {
-          parent_node_token: wikiSpaceId,
-          obj_type: 'slides',
-          title,
-        },
-      });
-
-      const token =
-        response?.data?.node?.node_token || response?.data?.node_token;
-      if (token) {
-        return {
-          token,
-          url: `https://feishu.cn/wiki/${token}`,
-        };
-      }
-    }
-
-    // 回退到多维表格，作为自由画布/演示草稿容器
-    const fallback = await (this.client as any).bitable.app.create({
-      data: {
-        name: title,
-      },
-    });
-
-    const token = fallback?.data?.app?.app_token || fallback?.data?.app_token;
-    if (!token) {
-      throw new Error('演示/画布创建失败，未获取到 token');
-    }
-
-    return {
-      token,
-      url: `https://feishu.cn/base/${token}`,
-    };
   }
 
   private async appendToWhiteboard(
