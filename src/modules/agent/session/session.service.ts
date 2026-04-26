@@ -50,9 +50,13 @@ export class SessionService {
    * @param role 角色
    * @param content 内容
    */
-  addMessage(userId: string, role: 'user' | 'assistant', content: string): void {
+  addMessage(
+    userId: string,
+    role: 'user' | 'assistant',
+    content: string,
+  ): void {
     const session = this.getOrCreateSession(userId);
-    
+
     session.history.push({
       role,
       content,
@@ -64,7 +68,9 @@ export class SessionService {
       session.history = session.history.slice(-this.maxHistoryLength);
     }
 
-    this.logger.debug(`添加消息到会话 ${session.id}: ${role} - ${content.substring(0, 50)}...`);
+    this.logger.debug(
+      `添加消息到会话 ${session.id}: ${role} - ${content.substring(0, 50)}...`,
+    );
   }
 
   /**
@@ -73,7 +79,10 @@ export class SessionService {
    * @param limit 限制返回的消息数量
    * @returns 会话历史
    */
-  getSessionHistory(userId: string, limit: number = 20): Array<{
+  getSessionHistory(
+    userId: string,
+    limit: number = 20,
+  ): Array<{
     role: 'user' | 'assistant';
     content: string;
     timestamp: number;

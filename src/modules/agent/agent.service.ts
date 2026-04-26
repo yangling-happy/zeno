@@ -223,7 +223,7 @@ export class AgentService {
             intent: cls.intent,
             confidence: cls.confidence,
             params: cls.parameters,
-            route: this.resolveRoute(cls.intent as IntentType, cls.confidence),
+            route: this.resolveRoute(cls.intent, cls.confidence),
           },
           'intent_classifier',
         );

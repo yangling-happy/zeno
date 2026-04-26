@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
+import { LarkDocService } from './doc/lark-doc.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -25,11 +26,14 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly processedMessageTimestamps = new Map<string, number>();
   private readonly processedMessageTtlMs = 10 * 60 * 1000;
   private readonly processedMessageMaxSize = 5000;
+  private readonly docService: LarkDocService;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly agentService: AgentService,
-  ) {}
+  ) {
+    this.docService = new LarkDocService(configService);
+  }
 
   onModuleInit() {
     this.initLarkWS();
@@ -45,6 +49,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.client = new Lark.Client({ appId, appSecret });
+    this.docService.initClient(this.client);
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => {
@@ -216,7 +221,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
   private async executeActionInstruction(
     action: ActionInstruction,
-    message: LarkWebhookMessage,
+    _message: LarkWebhookMessage,
   ): Promise<string> {
     if (!this.client || action.type === 'NONE') {
       return '';
@@ -225,7 +230,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     try {
       switch (action.type) {
         case 'LARK_DOC_CREATE': {
-          const doc = await this.createDoc(action.params.title);
+          const doc = await this.docService.createDocument(action.params.title);
+          if (action.params.summary) {
+            await this.docService.appendMarkdownToDocument(
+              doc.documentId,
+              action.params.summary,
+            );
+          }
           return `📄 文档已创建：${doc.url}`;
         }
 
@@ -243,13 +254,16 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
 
         case 'LARK_DOC_PRESENT_LINK': {
-          const doc = await this.createDoc(action.params.title);
+          const doc = await this.docService.createDocument(action.params.title);
           const present = await this.createPresentation(
             `${action.params.title}-演示`,
           );
 
           if (action.params.summary) {
-            await this.appendTextToDoc(doc.documentId, action.params.summary);
+            await this.docService.appendMarkdownToDocument(
+              doc.documentId,
+              action.params.summary,
+            );
           }
 
           return [
@@ -266,53 +280,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`❌ 执行动作失败: ${action.type}`, error as Error);
       return `⚠️ 已识别出动作 ${action.type}，但执行失败：${(error as Error).message}`;
     }
-  }
-
-  private async createDoc(
-    title: string,
-  ): Promise<{ documentId: string; url: string }> {
-    const response = await (this.client as any).docx.v1.document.create({
-      data: {
-        title,
-      },
-    });
-
-    const documentId =
-      response?.data?.document?.document_id || response?.data?.document_id;
-
-    if (!documentId) {
-      throw new Error('未从飞书文档接口返回 document_id');
-    }
-
-    return {
-      documentId,
-      url: `https://feishu.cn/docx/${documentId}`,
-    };
-  }
-
-  private async appendTextToDoc(documentId: string, text: string) {
-    await (this.client as any).docx.v1.documentBlockChildren.create({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        children: [
-          {
-            block_type: 2,
-            text: {
-              elements: [
-                {
-                  text_run: {
-                    content: text,
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      },
-    });
   }
 
   private async createPresentation(

@@ -33,12 +33,14 @@ export class AiService {
         return await this.fetchWithTimeout(text, attempt + 1);
       } catch (error) {
         lastError = error as Error;
-        this.logger.warn(`AI 调用失败 (尝试 ${attempt + 1}/${this.maxRetries}): ${lastError.message}`);
-        
+        this.logger.warn(
+          `AI 调用失败 (尝试 ${attempt + 1}/${this.maxRetries}): ${lastError.message}`,
+        );
+
         // 指数退避
         if (attempt < this.maxRetries - 1) {
           const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
@@ -48,13 +50,16 @@ export class AiService {
     return this.getFallbackResponse(text);
   }
 
-  private async fetchWithTimeout(text: string, attempt: number): Promise<string> {
+  private async fetchWithTimeout(
+    text: string,
+    attempt: number,
+  ): Promise<string> {
     const apiKey = this.configService.get<string>('ARK_API_KEY') || '';
-    const model = 
+    const model =
       this.configService.get<string>('ARK_MODEL') ||
       this.configService.get<string>('ARK_ENDPOINT_ID') ||
       '';
-    const baseUrl = 
+    const baseUrl =
       this.configService.get<string>('ARK_BASE_URL') ||
       'https://ark.cn-beijing.volces.com/api/v3';
 
@@ -92,18 +97,17 @@ export class AiService {
       };
 
       if (!response.ok) {
-        const message = 
+        const message =
           payload.error?.message || `Ark 请求失败: ${response.status}`;
         this.logger.error(message);
         throw new Error(message);
       }
 
-      const content = (
+      const content =
         payload.choices?.[0]?.message?.content ||
         payload.choices?.[0]?.content ||
         payload.data?.choices?.[0]?.message?.content ||
-        ''
-      );
+        '';
 
       if (!content) {
         throw new Error('AI 返回空内容');

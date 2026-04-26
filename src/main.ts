@@ -5,12 +5,12 @@ import { startOtel, shutdownOtel } from './opentelemetry';
 async function bootstrap() {
   // 启动 OpenTelemetry
   await startOtel();
-  
+
   const app = await NestFactory.create(AppModule);
-  
+
   // 优雅关闭
   app.enableShutdownHooks();
-  
+
   await app.listen(process.env.PORT ?? 3000);
 }
 
