@@ -3,6 +3,7 @@ import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { z } from 'zod';
 import { AiService } from '../ai/ai.service';
 import {
+  ActionInstruction,
   AgentRunInput,
   AgentRunResult,
   IntentType,
@@ -25,24 +26,25 @@ const IntentSchema = z.object({
   confidence: z.number().min(0).max(1),
   reason: z.string().describe('选择该意图的理由'),
   parameters: z
-    .record(z.string(),z.any())
+    .record(z.string(), z.any())
     .optional()
     .describe('提取出的关键参数，如 docTitle, targetDevice 等'),
 });
 
-const AgentGraphState = Annotation.Root(
-  {
-    userInput: Annotation<AgentRunInput>,
-    normalizedText: Annotation<string>,
-    intent: Annotation<IntentType>,
-    confidence: Annotation<number>,
-    params: Annotation<z.infer<typeof IntentSchema>['parameters']>,
-    persona: Annotation<PersonaProfile>,
-    route: Annotation<'plan' | 'sync' | 'chat' | 'end' | 'clarify'>,
-    response: Annotation<string>,
-    trace: Annotation<string[]>,
-  },
-);
+const AgentGraphState = Annotation.Root({
+  userInput: Annotation<AgentRunInput>,
+  normalizedText: Annotation<string>,
+  intent: Annotation<IntentType>,
+  confidence: Annotation<number>,
+  params: Annotation<z.infer<typeof IntentSchema>['parameters']>,
+  persona: Annotation<PersonaProfile>,
+  route: Annotation<
+    'plan' | 'sync' | 'doc' | 'present' | 'chat' | 'end' | 'clarify'
+  >,
+  response: Annotation<string>,
+  actionInstruction: Annotation<ActionInstruction | undefined>,
+  trace: Annotation<string[]>,
+});
 
 type GraphState = typeof AgentGraphState.State;
 
@@ -75,6 +77,7 @@ export class AgentService {
       persona: this.personas.zeno,
       route: 'clarify',
       response: '',
+      actionInstruction: { type: 'NONE' },
       trace: [],
     };
 
@@ -83,6 +86,7 @@ export class AgentService {
       intent: result.intent,
       confidence: result.confidence,
       response: result.response || '任务已接收，正在处理中...',
+      actionInstruction: result.actionInstruction,
       trace: result.trace,
     };
   }
@@ -117,7 +121,44 @@ export class AgentService {
       .addNode('sync_node', async (state) => {
         return {
           response: `[场景E: 多端同步] 正在将数据从 ${state.userInput.channel || '未知设备'} 同步至另一端...`,
+          actionInstruction: { type: 'NONE' as const },
           trace: [...state.trace, 'sync_node'],
+        };
+      })
+      // 场景 C: 文档节点
+      .addNode('doc_node', async (state) => {
+        const actionInstruction = this.buildActionInstruction(
+          'SCENE_DOC',
+          state.params,
+          state.normalizedText,
+        );
+        return {
+          response:
+            '已识别为文档协作请求，我会创建文档并在会话中回传链接，随后可继续生成演示文稿或写入画布。',
+          actionInstruction,
+          trace: [...state.trace, 'doc_node'],
+        };
+      })
+      // 场景 D: 演示/画布节点
+      .addNode('present_node', async (state) => {
+        const actionInstruction = this.buildActionInstruction(
+          'SCENE_PRESENT',
+          state.params,
+          state.normalizedText,
+        );
+        return {
+          response:
+            '已识别为演示/画布请求，我会串联创建文档与演示材料，并按参数写入自由画布。',
+          actionInstruction,
+          trace: [...state.trace, 'present_node'],
+        };
+      })
+      .addNode('clarify_node', async (state) => {
+        return {
+          response:
+            '我理解到你可能在发起协作任务。请补充：要创建文档、演示文稿，还是要向已有自由画布追加内容？',
+          actionInstruction: { type: 'NONE' as const },
+          trace: [...state.trace, 'clarify_node'],
         };
       })
       // 通用回复节点
@@ -125,18 +166,28 @@ export class AgentService {
         const response = await this.aiService.chat(
           `作为${state.persona.name}，回答：${state.normalizedText}`,
         );
-        return { response, trace: [...state.trace, 'general_chat'] };
+        return {
+          response,
+          actionInstruction: { type: 'NONE' as const },
+          trace: [...state.trace, 'general_chat'],
+        };
       })
       .addEdge(START, 'normalize_input')
       .addEdge('normalize_input', 'intent_classifier')
       .addConditionalEdges('intent_classifier', (state) => state.route, {
         plan: 'planner_node',
         sync: 'sync_node',
+        doc: 'doc_node',
+        present: 'present_node',
         chat: 'general_chat',
+        clarify: 'clarify_node',
         end: END,
       })
       .addEdge('planner_node', END)
       .addEdge('sync_node', END)
+      .addEdge('doc_node', END)
+      .addEdge('present_node', END)
+      .addEdge('clarify_node', END)
       .addEdge('general_chat', END);
 
     this.compiledGraph = graph.compile();
@@ -144,8 +195,7 @@ export class AgentService {
   }
 
   private async classifyIntent(text: string) {
-    // 使用结构化输出，直接对标比赛场景
-    const systemPrompt = `你是zeno,一个多端协同办公助手。
+    const systemPrompt = `你是一个多端协同办公助手，名字叫zeno。
     意图分发规则：
     1. SCENE_PLAN: 涉及任务规划、方案拆解。
     2. SCENE_DOC: 涉及文档编写、内容编辑。
@@ -178,11 +228,73 @@ export class AgentService {
   private resolveRoute(
     intent: IntentType,
     confidence: number,
-  ): 'plan' | 'sync' | 'chat' | 'end' | 'clarify' {
-    if (confidence < 0.6) return 'chat';
+  ): 'plan' | 'sync' | 'doc' | 'present' | 'chat' | 'end' | 'clarify' {
+    if (confidence < 0.6) return 'clarify';
     if (intent === 'SCENE_PLAN') return 'plan';
     if (intent === 'SCENE_SYNC') return 'sync';
-    if (intent === 'SCENE_DOC' || intent === 'SCENE_PRESENT') return 'chat'; // 可扩展对应节点
+    if (intent === 'SCENE_DOC') return 'doc';
+    if (intent === 'SCENE_PRESENT') return 'present';
     return 'chat';
+  }
+
+  private buildActionInstruction(
+    intent: IntentType,
+    params: z.infer<typeof IntentSchema>['parameters'] | undefined,
+    normalizedText: string,
+  ): ActionInstruction {
+    const docTitle =
+      typeof params?.docTitle === 'string' && params.docTitle.trim().length > 0
+        ? params.docTitle.trim()
+        : `Zeno 文档-${new Date().toLocaleString('zh-CN')}`;
+
+    const presentTitle =
+      typeof params?.presentTitle === 'string' &&
+      params.presentTitle.trim().length > 0
+        ? params.presentTitle.trim()
+        : `Zeno 演示-${new Date().toLocaleString('zh-CN')}`;
+
+    if (intent === 'SCENE_DOC') {
+      return {
+        type: 'LARK_DOC_CREATE',
+        params: {
+          title: docTitle,
+          summary:
+            typeof params?.summary === 'string'
+              ? params.summary
+              : normalizedText.slice(0, 120),
+        },
+      };
+    }
+
+    if (intent === 'SCENE_PRESENT') {
+      if (
+        typeof params?.whiteboardId === 'string' &&
+        params.whiteboardId.trim().length > 0
+      ) {
+        return {
+          type: 'LARK_WHITEBOARD_APPEND',
+          params: {
+            whiteboardId: params.whiteboardId.trim(),
+            text:
+              typeof params?.summary === 'string'
+                ? params.summary
+                : normalizedText.slice(0, 200),
+          },
+        };
+      }
+
+      return {
+        type: 'LARK_DOC_PRESENT_LINK',
+        params: {
+          title: presentTitle,
+          summary:
+            typeof params?.summary === 'string'
+              ? params.summary
+              : normalizedText.slice(0, 120),
+        },
+      };
+    }
+
+    return { type: 'NONE' };
   }
 }

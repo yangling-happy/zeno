@@ -2,7 +2,6 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AgentService } from '../agent/agent.service';
 import { LarkService } from './lark.service';
-import { AiService } from '../ai/ai.service';
 
 let registeredHandlers: Record<
   string,
@@ -64,9 +63,9 @@ describe('LarkService', () => {
           },
         },
         {
-          provide: AiService,
+          provide: AgentService,
           useValue: {
-            chat: jest.fn(),
+            run: jest.fn(),
           },
         },
       ],

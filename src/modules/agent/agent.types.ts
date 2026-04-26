@@ -25,14 +25,45 @@ export interface AgentRunInput {
   channel?: string;
 }
 
+export type ActionInstruction =
+  | {
+      type: 'NONE';
+      params?: Record<string, unknown>;
+    }
+  | {
+      type: 'LARK_DOC_CREATE';
+      params: {
+        title: string;
+        summary?: string;
+      };
+    }
+  | {
+      type: 'LARK_PRESENT_CREATE';
+      params: {
+        title: string;
+        summary?: string;
+      };
+    }
+  | {
+      type: 'LARK_WHITEBOARD_APPEND';
+      params: {
+        whiteboardId: string;
+        text: string;
+      };
+    }
+  | {
+      type: 'LARK_DOC_PRESENT_LINK';
+      params: {
+        title: string;
+        summary?: string;
+      };
+    };
+
 export interface AgentRunResult {
   intent: IntentType;
   confidence: number;
   response: string;
   trace: string[];
   // 结构化指令，用于飞书前端渲染卡片或执行跨端操作
-  actionInstruction?: {
-    type: string;
-    params: any;
-  };
+  actionInstruction?: ActionInstruction;
 }

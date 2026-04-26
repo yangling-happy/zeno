@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { AgentService } from '../agent/agent.service';
+import { ActionInstruction } from '../agent/agent.types';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -47,28 +48,34 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => {
-        const message = data?.message as LarkWebhookMessage | undefined;
+        try {
+          const message = data?.message as LarkWebhookMessage | undefined;
 
-        if (!message) {
-          return;
+          if (!message) {
+            this.logger.warn('⚠️ 接收到的消息数据不完整');
+            return;
+          }
+
+          if (this.isDuplicateMessage(message.message_id)) {
+            this.logger.warn(
+              `♻️ 检测到重复投递，已跳过处理: ${message.message_id}`,
+            );
+            return;
+          }
+
+          const text = this.extractText(message.content);
+          if (!text) {
+            this.logger.warn('⚠️ 消息内容为空，跳过处理');
+            return;
+          }
+
+          this.logger.log(`📩 收到消息: ${text}`);
+
+          // 这里不要阻塞事件回调，避免因为 AI 调用耗时导致飞书重试同一条事件。
+          void this.processMessage(message, text);
+        } catch (error) {
+          this.logger.error('❌ 处理消息事件失败:', error);
         }
-
-        if (this.isDuplicateMessage(message.message_id)) {
-          this.logger.warn(
-            `♻️ 检测到重复投递，已跳过处理: ${message.message_id}`,
-          );
-          return;
-        }
-
-        const text = this.extractText(message.content);
-        if (!text) {
-          return;
-        }
-
-        this.logger.log(`📩 收到消息: ${text}`);
-
-        // 这里不要阻塞事件回调，避免因为 AI 调用耗时导致飞书重试同一条事件。
-        void this.processMessage(message, text);
       },
     });
 
@@ -82,8 +89,24 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const parsed = JSON.parse(content) as { text?: string };
-      return parsed.text?.trim() || '';
+      const parsed = JSON.parse(content) as {
+        text?: string;
+        content?: string;
+        markdown?: string;
+      };
+      // 尝试获取 text 字段（普通文本消息）
+      if (parsed.text) {
+        return parsed.text.trim();
+      }
+      // 尝试获取 content 字段（某些消息类型）
+      if (parsed.content) {
+        return parsed.content.trim();
+      }
+      // 尝试获取 markdown 字段（markdown 格式消息）
+      if (parsed.markdown) {
+        return parsed.markdown.trim();
+      }
+      return '';
     } catch {
       return content.trim();
     }
@@ -103,7 +126,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       })
       .catch((err) => {
         this.logger.error('❌ 飞书长连接启动失败:', err);
+        // 启动失败后尝试重连
+        this.scheduleReconnect();
       });
+  }
+
+  private scheduleReconnect() {
+    // 延迟3秒后重连，避免频繁重连
+    setTimeout(() => {
+      this.logger.log('🔄 尝试重新建立飞书长连接...');
+      this.startWS();
+    }, 3000);
   }
 
   private isDuplicateMessage(messageId?: string): boolean {
@@ -144,7 +177,9 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async processMessage(message: LarkWebhookMessage, text: string) {
+    this.logger.log(`📋 开始处理消息: ${message.message_id || 'unknown'}`);
     try {
+      this.logger.log(`🤖 调用 Agent 服务处理消息`);
       const result = await this.agentService.run({
         text,
         userId: message.open_id,
@@ -153,14 +188,198 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
       );
-      await this.reply(message.message_id, result.response);
+
+      let replyText = result.response;
+      if (result.actionInstruction) {
+        this.logger.log(`⚡ 执行动作指令: ${result.actionInstruction.type}`);
+        const actionResult = await this.executeActionInstruction(
+          result.actionInstruction,
+          message,
+        );
+        if (actionResult) {
+          replyText = `${replyText}\n\n${actionResult}`;
+        }
+      }
+
+      this.logger.log(`💬 准备回复消息: ${message.message_id || 'unknown'}`);
+      await this.reply(message.message_id, replyText);
+      this.logger.log(`✅ 消息处理完成: ${message.message_id || 'unknown'}`);
     } catch (error) {
       // 处理失败时释放去重标记，允许飞书重试再次触发处理。
       if (message.message_id) {
         this.processedMessageTimestamps.delete(message.message_id);
+        this.logger.warn(`♻️ 释放消息去重标记: ${message.message_id}`);
       }
       this.logger.error('❌ 处理飞书消息失败:', error);
     }
+  }
+
+  private async executeActionInstruction(
+    action: ActionInstruction,
+    message: LarkWebhookMessage,
+  ): Promise<string> {
+    if (!this.client || action.type === 'NONE') {
+      return '';
+    }
+
+    try {
+      switch (action.type) {
+        case 'LARK_DOC_CREATE': {
+          const doc = await this.createDoc(action.params.title);
+          return `📄 文档已创建：${doc.url}`;
+        }
+
+        case 'LARK_PRESENT_CREATE': {
+          const present = await this.createPresentation(action.params.title);
+          return `🖼️ 演示内容已创建：${present.url}`;
+        }
+
+        case 'LARK_WHITEBOARD_APPEND': {
+          const nodeId = await this.appendToWhiteboard(
+            action.params.whiteboardId,
+            action.params.text,
+          );
+          return `🧩 已写入自由画布（whiteboard=${action.params.whiteboardId}, node=${nodeId}）`;
+        }
+
+        case 'LARK_DOC_PRESENT_LINK': {
+          const doc = await this.createDoc(action.params.title);
+          const present = await this.createPresentation(
+            `${action.params.title}-演示`,
+          );
+
+          if (action.params.summary) {
+            await this.appendTextToDoc(doc.documentId, action.params.summary);
+          }
+
+          return [
+            `🔗 已完成文档+演示串联：`,
+            `- 文档：${doc.url}`,
+            `- 演示/画布：${present.url}`,
+          ].join('\n');
+        }
+
+        default:
+          return '';
+      }
+    } catch (error) {
+      this.logger.error(`❌ 执行动作失败: ${action.type}`, error as Error);
+      return `⚠️ 已识别出动作 ${action.type}，但执行失败：${(error as Error).message}`;
+    }
+  }
+
+  private async createDoc(
+    title: string,
+  ): Promise<{ documentId: string; url: string }> {
+    const response = await (this.client as any).docx.v1.document.create({
+      data: {
+        title,
+      },
+    });
+
+    const documentId =
+      response?.data?.document?.document_id || response?.data?.document_id;
+
+    if (!documentId) {
+      throw new Error('未从飞书文档接口返回 document_id');
+    }
+
+    return {
+      documentId,
+      url: `https://feishu.cn/docx/${documentId}`,
+    };
+  }
+
+  private async appendTextToDoc(documentId: string, text: string) {
+    await (this.client as any).docx.v1.documentBlockChildren.create({
+      path: {
+        document_id: documentId,
+        block_id: documentId,
+      },
+      data: {
+        children: [
+          {
+            block_type: 2,
+            text: {
+              elements: [
+                {
+                  text_run: {
+                    content: text,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  private async createPresentation(
+    title: string,
+  ): Promise<{ token: string; url: string }> {
+    const wikiSpaceId = this.configService.get<string>('LARK_WIKI_SPACE_ID');
+
+    if (wikiSpaceId) {
+      const response = await (this.client as any).wiki.v2.spaceNode.create({
+        path: {
+          space_id: wikiSpaceId,
+        },
+        data: {
+          parent_node_token: wikiSpaceId,
+          obj_type: 'slides',
+          title,
+        },
+      });
+
+      const token =
+        response?.data?.node?.node_token || response?.data?.node_token;
+      if (token) {
+        return {
+          token,
+          url: `https://feishu.cn/wiki/${token}`,
+        };
+      }
+    }
+
+    // 回退到多维表格，作为自由画布/演示草稿容器
+    const fallback = await (this.client as any).bitable.app.create({
+      data: {
+        name: title,
+      },
+    });
+
+    const token = fallback?.data?.app?.app_token || fallback?.data?.app_token;
+    if (!token) {
+      throw new Error('演示/画布创建失败，未获取到 token');
+    }
+
+    return {
+      token,
+      url: `https://feishu.cn/base/${token}`,
+    };
+  }
+
+  private async appendToWhiteboard(
+    whiteboardId: string,
+    text: string,
+  ): Promise<string> {
+    const response = await (this.client as any).board.v1.whiteboardNode.create({
+      path: {
+        whiteboard_id: whiteboardId,
+      },
+      data: {
+        type: 'TEXT',
+        text,
+      },
+    });
+
+    const nodeId = response?.data?.node_id || response?.data?.id;
+    if (!nodeId) {
+      throw new Error('白板写入失败，未返回 node_id');
+    }
+
+    return nodeId;
   }
 
   private async reply(messageId: string | undefined, text: string) {
