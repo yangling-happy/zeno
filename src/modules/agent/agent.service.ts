@@ -1,9 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import { z } from 'zod';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
-import { SessionService } from './session.service';
+import { SessionService } from './session/session.service';
 import { CacheService } from './cache.service';
 import {
   ActionInstruction,
@@ -12,7 +11,12 @@ import {
   IntentType,
   PersonaProfile,
 } from './agent.types';
-import { AgentUtils } from './agent.utils';
+import { IntentSchema, IntentClassification } from './zod/agent-zod.schema';
+import {
+  checkRateLimit,
+  buildResponse,
+  updateStateWithTrace,
+} from '../common/agent.utils';
 
 // 条件导入 OpenTelemetry
 let trace: any;
@@ -28,35 +32,12 @@ try {
   };
 }
 
-// 1. 定义 Zod Schema 确保意图识别的精准度
-const IntentSchema = z.object({
-  intent: z.enum([
-    'SCENE_PLAN',
-    'SCENE_DOC',
-    'SCENE_PRESENT',
-    'SCENE_SYNC',
-    'SCENE_DELIVERY',
-    'AGENT_IDENTITY',
-    'SAFE_REFUSAL',
-    'CLARIFY',
-    'CHITCHAT',
-  ]),
-  confidence: z.number().min(0).max(1),
-  reason: z.string().describe('选择该意图的理由'),
-  parameters: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .describe('提取出的关键参数，如 docTitle, targetDevice 等'),
-});
-
-export type IntentClassification = z.infer<typeof IntentSchema>;
-
 const AgentGraphState = Annotation.Root({
   userInput: Annotation<AgentRunInput>,
   normalizedText: Annotation<string>,
   intent: Annotation<IntentType>,
   confidence: Annotation<number>,
-  params: Annotation<z.infer<typeof IntentSchema>['parameters']>,
+  params: Annotation<IntentClassification['parameters']>,
   persona: Annotation<PersonaProfile>,
   route: Annotation<
     'plan' | 'sync' | 'doc' | 'present' | 'chat' | 'end' | 'clarify'
@@ -211,25 +192,12 @@ export class AgentService {
    * @returns 是否允许请求
    */
   private checkRateLimit(userId: string): boolean {
-    const now = Date.now();
-    let timestamps = this.requestTimestamps.get(userId) || [];
-
-    // 过滤出窗口内的请求
-    timestamps = timestamps.filter(
-      (timestamp) => now - timestamp < this.rateLimitWindow,
+    return checkRateLimit(
+      userId,
+      this.requestTimestamps,
+      this.rateLimitWindow,
+      this.rateLimitMax,
     );
-
-    // 检查是否超过限制
-    if (timestamps.length >= this.rateLimitMax) {
-      this.requestTimestamps.set(userId, timestamps);
-      return false;
-    }
-
-    // 添加当前请求时间戳
-    timestamps.push(now);
-    this.requestTimestamps.set(userId, timestamps);
-
-    return true;
   }
 
   private getOrCreateGraph() {
@@ -237,7 +205,7 @@ export class AgentService {
 
     const graph = new StateGraph(AgentGraphState)
       .addNode('normalize_input', (state) =>
-        AgentUtils.updateStateWithTrace(
+        updateStateWithTrace(
           state,
           {
             normalizedText: state.userInput.text.trim(),
@@ -249,7 +217,7 @@ export class AgentService {
       // 场景 A: 意图识别入口
       .addNode('intent_classifier', async (state) => {
         const cls = await this.classifyIntent(state.normalizedText);
-        return AgentUtils.updateStateWithTrace(
+        return updateStateWithTrace(
           state,
           {
             intent: cls.intent,
@@ -262,17 +230,17 @@ export class AgentService {
       })
       // 场景 B: 任务规划节点
       .addNode('planner_node', async (state) => {
-        const response = AgentUtils.buildResponse(
+        const response = buildResponse(
           `[场景B: 任务规划] 我已理解您的意图：${state.params?.goal || '新任务'}。正在为您拆解步骤...`,
         );
-        return AgentUtils.updateStateWithTrace(state, response, 'planner_node');
+        return updateStateWithTrace(state, response, 'planner_node');
       })
       // 场景 E: 多端同步节点
       .addNode('sync_node', async (state) => {
-        const response = AgentUtils.buildResponse(
+        const response = buildResponse(
           `[场景E: 多端同步] 正在将数据从 ${state.userInput.channel || '未知设备'} 同步至另一端...`,
         );
-        return AgentUtils.updateStateWithTrace(state, response, 'sync_node');
+        return updateStateWithTrace(state, response, 'sync_node');
       })
       // 场景 C: 文档节点
       .addNode('doc_node', async (state) => {
@@ -281,11 +249,11 @@ export class AgentService {
           state.params,
           state.normalizedText,
         );
-        const response = AgentUtils.buildResponse(
+        const response = buildResponse(
           '已识别为文档协作请求，我会创建文档并在会话中回传链接，随后可继续生成演示文稿或写入画布。',
           actionInstruction,
         );
-        return AgentUtils.updateStateWithTrace(state, response, 'doc_node');
+        return updateStateWithTrace(state, response, 'doc_node');
       })
       // 场景 D: 演示/画布节点
       .addNode('present_node', async (state) => {
@@ -294,25 +262,25 @@ export class AgentService {
           state.params,
           state.normalizedText,
         );
-        const response = AgentUtils.buildResponse(
+        const response = buildResponse(
           '已识别为演示/画布请求，我会串联创建文档与演示材料，并按参数写入自由画布。',
           actionInstruction,
         );
-        return AgentUtils.updateStateWithTrace(state, response, 'present_node');
+        return updateStateWithTrace(state, response, 'present_node');
       })
       .addNode('clarify_node', async (state) => {
-        const response = AgentUtils.buildResponse(
+        const response = buildResponse(
           '我理解到你可能在发起协作任务。请补充：要创建文档、演示文稿，还是要向已有自由画布追加内容？',
         );
-        return AgentUtils.updateStateWithTrace(state, response, 'clarify_node');
+        return updateStateWithTrace(state, response, 'clarify_node');
       })
       // 通用回复节点
       .addNode('general_chat', async (state) => {
         const responseText = await this.aiService.chat(
           `作为${state.persona.name}，回答：${state.normalizedText}`,
         );
-        const response = AgentUtils.buildResponse(responseText);
-        return AgentUtils.updateStateWithTrace(state, response, 'general_chat');
+        const response = buildResponse(responseText);
+        return updateStateWithTrace(state, response, 'general_chat');
       })
       .addEdge(START, 'normalize_input')
       .addEdge('normalize_input', 'intent_classifier')

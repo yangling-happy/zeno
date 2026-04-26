@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AgentService } from './agent.service';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
+import { SessionService } from './session/session.service';
+import { CacheService } from './cache.service';
 import { ConfigService } from '@nestjs/config';
 
 // 模拟配置服务
@@ -26,7 +28,7 @@ class MockAiService {
         intent: 'SCENE_DOC',
         confidence: 0.7,
         reason: '用户请求帮助，可能需要创建文档',
-        parameters: {}
+        parameters: {},
       });
     }
     // 对于明确的非文档请求，返回正确的意图
@@ -35,7 +37,7 @@ class MockAiService {
         intent: 'AGENT_IDENTITY',
         confidence: 0.95,
         reason: '用户询问身份',
-        parameters: {}
+        parameters: {},
       });
     }
     // 默认返回SCENE_DOC来模拟误判
@@ -43,9 +45,43 @@ class MockAiService {
       intent: 'SCENE_DOC',
       confidence: 0.65,
       reason: '默认分类为文档创建',
-      parameters: {}
+      parameters: {},
     });
   }
+}
+
+// 模拟Session服务
+class MockSessionService {
+  getSessionHistory() {
+    return [];
+  }
+  addMessage() {}
+  getOrCreateSession() {
+    return {
+      id: 'mock-session',
+      userId: 'test-user',
+      history: [],
+      lastActive: Date.now(),
+    };
+  }
+  clearSession() {}
+  getSessionCount() {
+    return 1;
+  }
+}
+
+// 模拟Cache服务
+class MockCacheService {
+  set() {}
+  get() {
+    return null;
+  }
+  delete() {}
+  clear() {}
+  size() {
+    return 0;
+  }
+  cleanup() {}
 }
 
 describe('AgentService - 意图识别分析', () => {
@@ -59,6 +95,14 @@ describe('AgentService - 意图识别分析', () => {
         {
           provide: AiService,
           useClass: MockAiService,
+        },
+        {
+          provide: SessionService,
+          useClass: MockSessionService,
+        },
+        {
+          provide: CacheService,
+          useClass: MockCacheService,
         },
         {
           provide: ConfigService,
@@ -79,7 +123,7 @@ describe('AgentService - 意图识别分析', () => {
         '如何使用这个系统',
         '给我一个项目计划',
         '帮我做一个PPT',
-        '同步我的设备数据'
+        '同步我的设备数据',
       ];
 
       console.log('意图识别测试结果:');
@@ -90,7 +134,7 @@ describe('AgentService - 意图识别分析', () => {
           const result = await agentService.run({
             text: testCase,
             userId: 'test-user',
-            channel: 'test-channel'
+            channel: 'test-channel',
           });
           console.log(`输入: ${testCase}`);
           console.log(`意图: ${result.intent}`);

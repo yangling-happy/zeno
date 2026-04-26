@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AgentService } from './agent.service';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
-import { SessionService } from './session.service';
+import { SessionService } from './session/session.service';
 import { CacheService } from './cache.service';
 import { ConfigService } from '@nestjs/config';
 
@@ -75,7 +75,7 @@ describe('AgentService', () => {
     it('should return a valid AgentRunResult', async () => {
       // 模拟会话历史
       sessionService.getSessionHistory.mockReturnValue([]);
-      
+
       // 模拟 AI 响应
       aiService.chat.mockResolvedValue(
         JSON.stringify({
@@ -83,7 +83,7 @@ describe('AgentService', () => {
           confidence: 0.9,
           reason: '用户在闲聊',
           parameters: {},
-        })
+        }),
       );
 
       // 模拟工具服务响应
@@ -120,7 +120,7 @@ describe('AgentService', () => {
     it('should return a valid IntentClassification', async () => {
       // 模拟缓存未命中
       cacheService.get.mockReturnValue(null);
-      
+
       // 模拟 AI 响应
       aiService.chat.mockResolvedValue(
         JSON.stringify({
@@ -128,7 +128,7 @@ describe('AgentService', () => {
           confidence: 0.9,
           reason: '用户在闲聊',
           parameters: {},
-        })
+        }),
       );
 
       // 调用 classifyIntent 方法
