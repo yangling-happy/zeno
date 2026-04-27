@@ -17,6 +17,7 @@ const ACTION_PHRASES = [
   '写一篇',
   '写一份',
   '写一段',
+  '写一个',
   '起草',
   '撰写',
   '整理成',
@@ -30,6 +31,8 @@ const ACTION_PHRASES = [
   '改写',
   '改成',
   '输出',
+  '要一个',
+  '给我一个',
 ];
 
 const CONSULTATIVE_PHRASES = [
@@ -89,13 +92,14 @@ export function detectRequestNature(text: string): RequestNature {
   );
 
   const hasQuestionMark = /[?？]/.test(normalizedText);
+  const hasExplicitActionVerb = /帮我|请|麻烦|给我|想要/.test(normalizedText);
   const looksConsultative =
     hasQuestionMark || matchedConsultativePhrases.length > 0;
   const looksDomainRelated = matchedDomainPhrases.length > 0;
 
   const isActionRequest =
     matchedActionPhrases.length > 0 &&
-    !(looksConsultative && !/帮我|请|麻烦/.test(normalizedText));
+    !(looksConsultative && !hasExplicitActionVerb);
 
   return {
     isActionRequest,

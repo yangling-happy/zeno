@@ -257,6 +257,8 @@ export const INTENT_RECOGNITION_REGEX_RULES: Record<IntentType, RegExp[]> = {
   SCENE_DOC: [
     /(写|起草|撰写|整理成).*(文档|纪要|稿|方案)/,
     /(生成|创建).*(文档|说明|纪要)/,
+    /(给|要|给我|想).*(写|生成|创建).*(文档|计划|方案|提纲)/,
+    /(文档|计划|方案|提纲).*(写|生成|创建|起草)/,
   ],
   SCENE_PRESENT: [
     /(PPT|演示|汇报|画布|幻灯片)/,
