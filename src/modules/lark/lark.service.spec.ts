@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AgentService } from '../agent/agent.service';
+import { InstructionDetectorService } from '../common/instruction-detector.service';
 import { LarkService } from './lark.service';
 
 let registeredHandlers: Record<
@@ -10,6 +11,12 @@ let registeredHandlers: Record<
 const startMock = jest.fn().mockResolvedValue(undefined);
 const stopMock = jest.fn().mockResolvedValue(undefined);
 const replyMock = jest.fn().mockResolvedValue({ code: 0 });
+const docCreateMock = jest.fn().mockResolvedValue({
+  data: { document: { document_id: 'doc_test_123' } },
+});
+const docBlockCreateMock = jest.fn().mockResolvedValue({
+  data: { children: [{ block_id: 'block_test_123' }] },
+});
 const flushPromises = () =>
   new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -19,6 +26,16 @@ jest.mock('@larksuiteoapi/node-sdk', () => {
       im: {
         message: {
           reply: replyMock,
+        },
+      },
+      docx: {
+        v1: {
+          document: {
+            create: docCreateMock,
+          },
+          documentBlockChildren: {
+            create: docBlockCreateMock,
+          },
         },
       },
     })),
@@ -45,6 +62,8 @@ describe('LarkService', () => {
     startMock.mockClear();
     stopMock.mockClear();
     replyMock.mockClear();
+    docCreateMock.mockClear();
+    docBlockCreateMock.mockClear();
     jest.clearAllMocks();
   });
 
@@ -66,6 +85,13 @@ describe('LarkService', () => {
           provide: AgentService,
           useValue: {
             run: jest.fn(),
+          },
+        },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
       ],
@@ -104,6 +130,13 @@ describe('LarkService', () => {
           provide: AgentService,
           useValue: {
             run: agentRunMock,
+          },
+        },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
       ],
@@ -164,6 +197,13 @@ describe('LarkService', () => {
             run: agentRunMock,
           },
         },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
+          },
+        },
       ],
     }).compile();
 
@@ -204,6 +244,13 @@ describe('LarkService', () => {
             run: jest.fn(),
           },
         },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
+          },
+        },
       ],
     }).compile();
 
@@ -233,6 +280,13 @@ describe('LarkService', () => {
             run: jest.fn(),
           },
         },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
+          },
+        },
       ],
     }).compile();
 
@@ -241,5 +295,76 @@ describe('LarkService', () => {
     await service.onModuleDestroy();
 
     expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should include document url in reply when action is LARK_DOC_CREATE', async () => {
+    const agentRunMock = jest.fn().mockResolvedValue({
+      intent: 'SCENE_DOC',
+      confidence: 0.98,
+      response: '已识别为文档协作请求',
+      trace: ['normalize_input', 'intent_classifier', 'doc_node'],
+      actionInstruction: {
+        type: 'LARK_DOC_CREATE',
+        params: {
+          title: '测试文档',
+          summary: '测试摘要',
+        },
+      },
+      skillExecutionPlan: {
+        primarySkill: { skillId: 'documentation.skill' },
+        secondarySkills: [],
+      },
+    });
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LarkService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) => {
+              if (key === 'LARK_APP_ID') return 'cli_test_app_id';
+              if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              return '';
+            },
+          },
+        },
+        {
+          provide: AgentService,
+          useValue: {
+            run: agentRunMock,
+          },
+        },
+        {
+          provide: InstructionDetectorService,
+          useValue: {
+            isInstruction: jest.fn().mockResolvedValue(false),
+            processInstruction: jest.fn().mockResolvedValue(''),
+          },
+        },
+      ],
+    }).compile();
+
+    const service = moduleRef.get(LarkService);
+
+    service.onModuleInit();
+    registeredHandlers['im.message.receive_v1']({
+      message: {
+        content: JSON.stringify({ text: '生成文档' }),
+        message_id: 'om_doc_create_test_id',
+      },
+    });
+    await flushPromises();
+
+    expect(docCreateMock).toHaveBeenCalledTimes(1);
+    expect(replyMock).toHaveBeenCalledTimes(1);
+    const replyPayload = replyMock.mock.calls[0][0];
+    expect(replyPayload.path.message_id).toBe('om_doc_create_test_id');
+    expect(replyPayload.data.msg_type).toBe('text');
+
+    const parsedContent = JSON.parse(replyPayload.data.content) as {
+      text: string;
+    };
+    expect(parsedContent.text).toContain('https://feishu.cn/docx/doc_test_123');
   });
 });

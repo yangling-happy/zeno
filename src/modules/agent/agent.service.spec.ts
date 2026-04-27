@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AgentService } from './agent.service';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
+import { IntentRoutingService } from './intent/intent-routing.service';
 import { SessionService } from './session/session.service';
 import { CacheService } from './cache.service';
 import { ConfigService } from '@nestjs/config';
@@ -51,6 +52,7 @@ describe('AgentService', () => {
           provide: AgentToolService,
           useValue: agentToolService,
         },
+        IntentRoutingService,
         {
           provide: SessionService,
           useValue: sessionService,
@@ -100,6 +102,51 @@ describe('AgentService', () => {
       expect(result.intent).toBe('CHITCHAT');
       expect(result.confidence).toBeGreaterThan(0);
       expect(result.response).toBeDefined();
+      expect(result.skillExecutionPlan?.primarySkill.skillId).toBe(
+        'chitchat.skill',
+      );
+    });
+
+    it('should fallback to CLARIFY when confidence below skill threshold', async () => {
+      sessionService.getSessionHistory.mockReturnValue([]);
+
+      aiService.chat.mockResolvedValue(
+        JSON.stringify({
+          intent: 'SCENE_SYNC',
+          confidence: 0.4,
+          reason: '可能涉及同步',
+          parameters: {},
+        }),
+      );
+
+      const result = await agentService.run({
+        text: '帮我同步一下',
+        userId: 'test-user',
+      });
+
+      expect(result.intent).toBe('CLARIFY');
+      expect(result.skillExecutionPlan?.primarySkill.fallbackReason).toContain(
+        '置信度低于技能阈值',
+      );
+    });
+
+    it('should treat document advice questions as chat instead of document creation', async () => {
+      sessionService.getSessionHistory.mockReturnValue([]);
+      aiService.chat.mockResolvedValueOnce(
+        '文档建议：先明确目标、受众和结构。',
+      );
+
+      const result = await agentService.run({
+        text: '平时写文档内容有什么建议',
+        userId: 'test-user',
+      });
+
+      expect(result.intent).toBe('CHITCHAT');
+      expect(result.skillExecutionPlan?.primarySkill.skillId).toBe(
+        'chitchat.skill',
+      );
+      expect(result.actionInstruction).toBeUndefined();
+      expect(result.response).toContain('文档建议');
     });
 
     it('should handle rate limit', async () => {
@@ -137,8 +184,8 @@ describe('AgentService', () => {
       // 验证结果
       expect(result).toBeDefined();
       expect(result.intent).toBe('CHITCHAT');
-      expect(result.confidence).toBe(0.9);
-      expect(result.reason).toBe('用户在闲聊');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.98);
+      expect(result.reason).toContain('正则规则命中');
     });
 
     it('should use cached result when available', async () => {

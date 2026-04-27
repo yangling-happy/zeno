@@ -22,3 +22,32 @@ export const IntentSchema = z.object({
 });
 
 export type IntentClassification = z.infer<typeof IntentSchema>;
+
+export const SkillMatchSchema = z.object({
+  skillId: z.enum([
+    'planning.skill',
+    'documentation.skill',
+    'presentation.skill',
+    'sync.skill',
+    'delivery.skill',
+    'identity.skill',
+    'safety.skill',
+    'clarify.skill',
+    'chitchat.skill',
+  ]),
+  intent: IntentSchema.shape.intent,
+  confidence: z.number().min(0).max(1),
+  reason: z.string(),
+  riskLevel: z.enum(['low', 'medium', 'high']),
+  parameters: z.record(z.string(), z.unknown()),
+  missingRequiredParams: z.array(z.string()),
+  fallbackReason: z.string().optional(),
+});
+
+export const SkillExecutionPlanSchema = z.object({
+  primarySkill: SkillMatchSchema,
+  secondarySkills: z.array(SkillMatchSchema),
+});
+
+export type SkillMatchDto = z.infer<typeof SkillMatchSchema>;
+export type SkillExecutionPlanDto = z.infer<typeof SkillExecutionPlanSchema>;

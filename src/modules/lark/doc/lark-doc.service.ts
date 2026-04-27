@@ -9,6 +9,7 @@ import {
   BatchBlockCreationResult,
   ImageUploadResult,
 } from './lark-doc-block.types';
+import { InstructionDetectorService } from '../../common/instruction-detector.service';
 
 @Injectable()
 export class LarkDocService {
@@ -16,7 +17,10 @@ export class LarkDocService {
   private client: Lark.Client | null = null;
   private readonly docWriter: LarkDocWriterService;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly instructionDetector: InstructionDetectorService,
+  ) {
     this.docWriter = new LarkDocWriterService();
   }
 
@@ -227,7 +231,17 @@ export class LarkDocService {
     text: string,
     index?: number,
   ): Promise<BlockCreationResult> {
-    const block = this.docWriter.createTextBlock(text);
+    // 检测是否为指令
+    const isInstruction = await this.instructionDetector.isInstruction(text);
+    
+    let content = text;
+    if (isInstruction) {
+      this.logger.log(`检测到指令，正在处理: ${text}`);
+      // 处理指令，生成内容
+      content = await this.instructionDetector.processInstruction(text);
+    }
+    
+    const block = this.docWriter.createTextBlock(content);
     return this.addBlockToDocument(documentId, block, index);
   }
 

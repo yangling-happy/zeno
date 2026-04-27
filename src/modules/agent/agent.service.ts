@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
+import { IntentRoutingService } from './intent/intent-routing.service';
 import { SessionService } from './session/session.service';
 import { CacheService } from './cache.service';
 import {
@@ -10,8 +11,15 @@ import {
   AgentRunResult,
   IntentType,
   PersonaProfile,
+  SkillExecutionPlan,
+  SkillMatch,
 } from './agent.types';
 import { IntentSchema, IntentClassification } from './zod/agent-zod.schema';
+import {
+  buildSkillPromptContext,
+  getSkillByIntent,
+  toSkillPlan,
+} from './skill/skill.registry';
 import {
   checkRateLimit,
   buildResponse,
@@ -38,6 +46,7 @@ const AgentGraphState = Annotation.Root({
   intent: Annotation<IntentType>,
   confidence: Annotation<number>,
   params: Annotation<IntentClassification['parameters']>,
+  skillExecutionPlan: Annotation<SkillExecutionPlan | undefined>,
   persona: Annotation<PersonaProfile>,
   route: Annotation<
     'plan' | 'sync' | 'doc' | 'present' | 'chat' | 'end' | 'clarify'
@@ -65,7 +74,7 @@ export class AgentService {
     zeno: {
       id: 'zeno',
       name: 'Zeno',
-      role: '跨端协同指挥官',
+      role: '多端协同指挥官',
       tone: '专业、高效、具备行动力',
       styleRules: ['优先给出场景解决方案', '跨端操作需明确确认'],
       boundaries: ['不涉及用户隐私数据'],
@@ -75,6 +84,7 @@ export class AgentService {
   constructor(
     private readonly aiService: AiService,
     private readonly agentToolService: AgentToolService,
+    private readonly intentRoutingService: IntentRoutingService,
     private readonly sessionService: SessionService,
     private readonly cacheService: CacheService,
   ) {}
@@ -141,6 +151,7 @@ export class AgentService {
             intent: 'CLARIFY',
             confidence: 0,
             params: {},
+            skillExecutionPlan: undefined,
             persona: this.personas.zeno,
             route: 'clarify',
             response: '',
@@ -171,6 +182,7 @@ export class AgentService {
             confidence: result.confidence,
             response: result.response || '任务已接收，正在处理中...',
             actionInstruction: result.actionInstruction,
+            skillExecutionPlan: result.skillExecutionPlan,
             trace: result.trace,
           };
         } catch (error) {
@@ -217,13 +229,18 @@ export class AgentService {
       // 场景 A: 意图识别入口
       .addNode('intent_classifier', async (state) => {
         const cls = await this.classifyIntent(state.normalizedText);
+        const skillExecutionPlan = this.buildExecutionPlan(cls);
         return updateStateWithTrace(
           state,
           {
-            intent: cls.intent,
-            confidence: cls.confidence,
-            params: cls.parameters,
-            route: this.resolveRoute(cls.intent, cls.confidence),
+            intent: skillExecutionPlan.primarySkill.intent,
+            confidence: skillExecutionPlan.primarySkill.confidence,
+            params: skillExecutionPlan.primarySkill.parameters,
+            skillExecutionPlan,
+            route: this.resolveRoute(
+              skillExecutionPlan.primarySkill.intent,
+              skillExecutionPlan.primarySkill.confidence,
+            ),
           },
           'intent_classifier',
         );
@@ -244,11 +261,11 @@ export class AgentService {
       })
       // 场景 C: 文档节点
       .addNode('doc_node', async (state) => {
-        const actionInstruction = this.agentToolService.buildActionInstruction(
-          'SCENE_DOC',
-          state.params,
-          state.normalizedText,
-        );
+        const actionInstruction =
+          this.agentToolService.buildActionInstructionFromSkillPlan(
+            state.skillExecutionPlan,
+            state.normalizedText,
+          );
         const response = buildResponse(
           '已识别为文档协作请求，我会创建文档并在会话中回传链接，随后可继续生成演示文稿或写入画布。',
           actionInstruction,
@@ -257,11 +274,11 @@ export class AgentService {
       })
       // 场景 D: 演示/画布节点
       .addNode('present_node', async (state) => {
-        const actionInstruction = this.agentToolService.buildActionInstruction(
-          'SCENE_PRESENT',
-          state.params,
-          state.normalizedText,
-        );
+        const actionInstruction =
+          this.agentToolService.buildActionInstructionFromSkillPlan(
+            state.skillExecutionPlan,
+            state.normalizedText,
+          );
         const response = buildResponse(
           '已识别为演示/画布请求，我会串联创建文档与演示材料，并按参数写入自由画布。',
           actionInstruction,
@@ -277,7 +294,7 @@ export class AgentService {
       // 通用回复节点
       .addNode('general_chat', async (state) => {
         const responseText = await this.aiService.chat(
-          `作为${state.persona.name}，回答：${state.normalizedText}`,
+          `你是${state.persona.name}，身份是${state.persona.role}。你的职责是“需求→规划→生成→同步→汇报”的全链路自动化协作。请以专业、高效、具备行动力的口吻回答：${state.normalizedText}`,
         );
         const response = buildResponse(responseText);
         return updateStateWithTrace(state, response, 'general_chat');
@@ -315,48 +332,84 @@ export class AgentService {
       return cachedResult;
     }
 
-    const systemPrompt = `你是一个多端协同办公助手，名字叫zeno。
-    意图分发规则：
-    1. SCENE_PLAN: 涉及任务规划、方案拆解。
-    2. SCENE_DOC: 涉及文档编写、内容编辑。
-    3. SCENE_PRESENT: 涉及PPT、流程图生成。
-    4. SCENE_SYNC: 涉及跨端同步、设备状态切换。
-    5. SCENE_DELIVERY: 涉及总结归档。
-    6. AGENT_IDENTITY: 询问你是谁。
-    7. SAFE_REFUSAL: 安全拒答。
-    8. CLARIFY: 意图模糊需追问。
-    9. CHITCHAT: 基础闲聊。
-    输出要求：只返回一个JSON对象，格式为 {"intent":"...","confidence":0-1,"reason":"...","parameters":{}}
-    不要返回其他任何内容，确保是严格的JSON格式。`;
+    const routeResult = await this.intentRoutingService.route(text);
+    const result = IntentSchema.parse(routeResult.classification);
 
-    const prompt = `${systemPrompt}\n用户输入：${text}`;
-    const response = await this.aiService.chat(prompt);
+    this.cacheService.set(cacheKey, result, this.cacheExpiry);
+    this.logger.debug(`缓存意图分类结果: ${cacheKey} [${routeResult.source}]`);
 
-    try {
-      const parsed = JSON.parse(response);
-      const result = IntentSchema.parse(parsed);
+    return result;
+  }
 
-      // 缓存结果
-      this.cacheService.set(cacheKey, result, this.cacheExpiry);
-      this.logger.debug(`缓存意图分类结果: ${cacheKey}`);
+  private buildSkillPromptContext(): string {
+    return buildSkillPromptContext();
+  }
 
-      return result;
-    } catch (error) {
-      this.logger.warn(
-        `意图分类解析失败，降级到兜底逻辑: ${(error as Error).message}`,
-      );
-      const fallbackResult = {
-        intent: 'CLARIFY' as IntentType,
-        confidence: 0.5,
-        reason: '分类失败',
-        parameters: {},
-      };
+  private buildExecutionPlan(
+    classification: IntentClassification,
+  ): SkillExecutionPlan {
+    const matchedSkills = this.matchSkills(classification);
+    return this.arbitrateSkills(matchedSkills);
+  }
 
-      // 缓存兜底结果
-      this.cacheService.set(cacheKey, fallbackResult, this.cacheExpiry / 2); // 兜底结果缓存时间减半
+  private matchSkills(classification: IntentClassification): SkillMatch[] {
+    const skillDef = getSkillByIntent(classification.intent);
+    const parameters = classification.parameters ?? {};
+    const missingRequiredParams = skillDef.requiredParams.filter(
+      (param) => !(param in parameters),
+    );
 
-      return fallbackResult;
+    let normalizedIntent = classification.intent;
+    let normalizedConfidence = classification.confidence;
+    let fallbackReason: string | undefined;
+
+    if (
+      classification.intent !== 'CLARIFY' &&
+      (classification.confidence < skillDef.confidenceThreshold ||
+        missingRequiredParams.length > 0)
+    ) {
+      normalizedIntent = skillDef.fallbackIntent;
+      normalizedConfidence = Math.min(classification.confidence, 0.59);
+      fallbackReason =
+        missingRequiredParams.length > 0
+          ? `缺少关键参数: ${missingRequiredParams.join(', ')}`
+          : `置信度低于技能阈值(${skillDef.confidenceThreshold})`;
     }
+
+    const normalizedSkillDef = getSkillByIntent(normalizedIntent);
+
+    const primarySkill: SkillMatch = {
+      skillId: normalizedSkillDef.id,
+      intent: normalizedIntent,
+      confidence: normalizedConfidence,
+      reason: classification.reason,
+      riskLevel: normalizedSkillDef.riskLevel,
+      parameters,
+      missingRequiredParams,
+      fallbackReason,
+    };
+
+    return [primarySkill];
+  }
+
+  private arbitrateSkills(matches: SkillMatch[]): SkillExecutionPlan {
+    if (matches.length === 0) {
+      const fallback: SkillMatch = {
+        skillId: 'clarify.skill',
+        intent: 'CLARIFY',
+        confidence: 0.5,
+        reason: '未命中可执行技能',
+        riskLevel: 'low',
+        parameters: {},
+        missingRequiredParams: [],
+        fallbackReason: '技能候选为空，降级澄清',
+      };
+      return toSkillPlan(fallback);
+    }
+
+    // V1 单技能：按置信度排序选主技能，次技能队列留空；V2 扩展多技能串联。
+    const sorted = [...matches].sort((a, b) => b.confidence - a.confidence);
+    return toSkillPlan(sorted[0]);
   }
 
   private resolveRoute(

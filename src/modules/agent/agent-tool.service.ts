@@ -1,15 +1,38 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ActionInstruction, IntentType } from './agent.types';
+import {
+  ActionInstruction,
+  IntentType,
+  SkillExecutionPlan,
+  SkillId,
+} from './agent.types';
+import { isLikelyActionRequest } from '../common/agent.utils';
 
 @Injectable()
 export class AgentToolService {
   private readonly logger = new Logger(AgentToolService.name);
+
+  private readonly skillToIntentMap: Record<SkillId, IntentType> = {
+    'planning.skill': 'SCENE_PLAN',
+    'documentation.skill': 'SCENE_DOC',
+    'presentation.skill': 'SCENE_PRESENT',
+    'sync.skill': 'SCENE_SYNC',
+    'delivery.skill': 'SCENE_DELIVERY',
+    'identity.skill': 'AGENT_IDENTITY',
+    'safety.skill': 'SAFE_REFUSAL',
+    'clarify.skill': 'CLARIFY',
+    'chitchat.skill': 'CHITCHAT',
+  };
 
   buildActionInstruction(
     intent: IntentType,
     params: Record<string, any> | undefined,
     normalizedText: string,
   ): ActionInstruction {
+    if (!isLikelyActionRequest(normalizedText)) {
+      this.logger.debug(`非执行请求，跳过动作指令生成: ${normalizedText}`);
+      return { type: 'NONE' };
+    }
+
     const docTitle =
       typeof params?.docTitle === 'string' && params.docTitle.trim().length > 0
         ? params.docTitle.trim()
@@ -64,5 +87,22 @@ export class AgentToolService {
     }
 
     return { type: 'NONE' };
+  }
+
+  buildActionInstructionFromSkillPlan(
+    plan: SkillExecutionPlan | undefined,
+    normalizedText: string,
+  ): ActionInstruction {
+    if (!plan) {
+      return { type: 'NONE' };
+    }
+
+    const primary = plan.primarySkill;
+    const intent = this.skillToIntentMap[primary.skillId] ?? primary.intent;
+    return this.buildActionInstruction(
+      intent,
+      primary.parameters,
+      normalizedText,
+    );
   }
 }

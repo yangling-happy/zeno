@@ -10,6 +10,7 @@ import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
+import { InstructionDetectorService } from '../common/instruction-detector.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -29,13 +30,21 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly processedMessageMaxSize = 5000;
   private readonly docService: LarkDocService;
   private readonly slidesService: LarkSlidesService;
+  private readonly userContextMap = new Map<
+    string,
+    { docId?: string; presentId?: string; lastDocId?: string }
+  >();
 
   constructor(
     private readonly configService: ConfigService,
     private readonly agentService: AgentService,
+    private readonly instructionDetector: InstructionDetectorService,
   ) {
-    this.docService = new LarkDocService(configService);
-    this.slidesService = new LarkSlidesService(configService);
+    this.docService = new LarkDocService(configService, instructionDetector);
+    this.slidesService = new LarkSlidesService(
+      configService,
+      instructionDetector,
+    );
   }
 
   onModuleInit() {
@@ -197,9 +206,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
       );
+      if (result.skillExecutionPlan) {
+        this.logger.log(
+          `🗺️ Skill执行计划: primary=${result.skillExecutionPlan.primarySkill.skillId}, secondary=${result.skillExecutionPlan.secondarySkills.length}`,
+        );
+      }
 
       let replyText = result.response;
-      if (result.actionInstruction) {
+      if (
+        result.actionInstruction &&
+        result.actionInstruction.type !== 'NONE'
+      ) {
         this.logger.log(`⚡ 执行动作指令: ${result.actionInstruction.type}`);
         const actionResult = await this.executeActionInstruction(
           result.actionInstruction,
@@ -208,19 +225,68 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         if (actionResult) {
           replyText = `${replyText}\n\n${actionResult}`;
         }
+
+        if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
+          const docId = this.extractDocIdFromActionResult(actionResult);
+          if (docId) {
+            const userId = message.open_id || 'anonymous';
+            const context = this.userContextMap.get(userId) || {};
+            context.lastDocId = docId;
+            this.userContextMap.set(userId, context);
+          }
+        }
+      } else if (result.actionInstruction?.type === 'NONE') {
+        const isInstruction =
+          await this.instructionDetector.isInstruction(text);
+        if (isInstruction) {
+          this.logger.log(`🤖 检测到指令，正在处理: ${text}`);
+          const userId = message.open_id || 'anonymous';
+          const context = this.userContextMap.get(userId);
+          const generatedContent =
+            await this.instructionDetector.processInstruction(
+              text,
+              context?.lastDocId
+                ? `用户正在操作的文档ID: ${context.lastDocId}`
+                : undefined,
+            );
+
+          if (context?.lastDocId) {
+            try {
+              const docResult = await this.docService.appendMarkdownToDocument(
+                context.lastDocId,
+                generatedContent,
+              );
+              replyText = `✅ 已根据您的指令生成内容并添加到文档中，共添加 ${docResult.blockIds.length} 个内容块。`;
+            } catch (error) {
+              this.logger.error(
+                `添加内容到文档失败: ${(error as Error).message}`,
+              );
+              replyText = `✅ 已生成内容：\n\n${generatedContent}`;
+            }
+          } else {
+            replyText = `✅ 已生成内容：\n\n${generatedContent}`;
+          }
+        }
       }
 
+      this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
       this.logger.log(`💬 准备回复消息: ${message.message_id || 'unknown'}`);
       await this.reply(message.message_id, replyText);
       this.logger.log(`✅ 消息处理完成: ${message.message_id || 'unknown'}`);
     } catch (error) {
-      // 处理失败时释放去重标记，允许飞书重试再次触发处理。
       if (message.message_id) {
         this.processedMessageTimestamps.delete(message.message_id);
         this.logger.warn(`♻️ 释放消息去重标记: ${message.message_id}`);
       }
       this.logger.error('❌ 处理飞书消息失败:', error);
     }
+  }
+
+  private extractDocIdFromActionResult(actionResult: string): string | null {
+    const urlMatch = actionResult.match(
+      /https:\/\/feishu\.cn\/docx\/([A-Za-z0-9]+)/i,
+    );
+    return urlMatch ? urlMatch[1] : null;
   }
 
   private async executeActionInstruction(
@@ -235,13 +301,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       switch (action.type) {
         case 'LARK_DOC_CREATE': {
           const doc = await this.docService.createDocument(action.params.title);
+          const docUrl =
+            doc.url && doc.url.startsWith('http')
+              ? doc.url
+              : `https://feishu.cn/docx/${doc.documentId}`;
           if (action.params.summary) {
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
               action.params.summary,
             );
           }
-          return `📄 文档已创建：${doc.url}`;
+          return `📄 文档已创建：${docUrl}`;
         }
 
         case 'LARK_PRESENT_CREATE': {

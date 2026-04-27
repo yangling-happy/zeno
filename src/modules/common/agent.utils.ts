@@ -1,5 +1,116 @@
 import { Logger } from '@nestjs/common';
 
+const ACTION_PHRASES = [
+  '写入',
+  '写进',
+  '帮我写',
+  '帮我生成',
+  '帮我创建',
+  '帮我做',
+  '请写',
+  '请生成',
+  '请创建',
+  '请制作',
+  '生成',
+  '创建',
+  '制作',
+  '写一篇',
+  '写一份',
+  '写一段',
+  '起草',
+  '撰写',
+  '整理成',
+  '补充到',
+  '追加到',
+  '填充',
+  '导出',
+  '追加',
+  '同步',
+  '填入',
+  '改写',
+  '改成',
+  '输出',
+];
+
+const CONSULTATIVE_PHRASES = [
+  '有什么建议',
+  '有哪些建议',
+  '怎么写',
+  '如何写',
+  '怎么做',
+  '如何做',
+  '有什么技巧',
+  '有哪些技巧',
+  '注意事项',
+  '写作建议',
+  '文档建议',
+  '推荐',
+  '规范',
+  '区别',
+  '为什么',
+  '是什么',
+  '适合',
+  '请教',
+  '参考',
+  '讲讲',
+];
+
+const DOMAIN_PHRASES = [
+  '文档',
+  'PPT',
+  '演示',
+  '画布',
+  '白板',
+  '同步',
+  '计划',
+  '汇报',
+  '纪要',
+];
+
+export interface RequestNature {
+  isActionRequest: boolean;
+  isConsultativeQuestion: boolean;
+  matchedActionPhrases: string[];
+  matchedConsultativePhrases: string[];
+  matchedDomainPhrases: string[];
+}
+
+export function detectRequestNature(text: string): RequestNature {
+  const normalizedText = text.trim();
+
+  const matchedActionPhrases = ACTION_PHRASES.filter((phrase) =>
+    normalizedText.includes(phrase),
+  );
+  const matchedConsultativePhrases = CONSULTATIVE_PHRASES.filter((phrase) =>
+    normalizedText.includes(phrase),
+  );
+  const matchedDomainPhrases = DOMAIN_PHRASES.filter((phrase) =>
+    normalizedText.includes(phrase),
+  );
+
+  const hasQuestionMark = /[?？]/.test(normalizedText);
+  const looksConsultative =
+    hasQuestionMark || matchedConsultativePhrases.length > 0;
+  const looksDomainRelated = matchedDomainPhrases.length > 0;
+
+  const isActionRequest =
+    matchedActionPhrases.length > 0 &&
+    !(looksConsultative && !/帮我|请|麻烦/.test(normalizedText));
+
+  return {
+    isActionRequest,
+    isConsultativeQuestion:
+      looksConsultative && looksDomainRelated && !isActionRequest,
+    matchedActionPhrases,
+    matchedConsultativePhrases,
+    matchedDomainPhrases,
+  };
+}
+
+export function isLikelyActionRequest(text: string): boolean {
+  return detectRequestNature(text).isActionRequest;
+}
+
 /**
  * 检查速率限制
  * @param userId 用户ID

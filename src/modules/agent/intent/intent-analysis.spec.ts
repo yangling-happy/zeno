@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { AgentService } from './agent.service';
-import { AiService } from '../ai/ai.service';
-import { AgentToolService } from './agent-tool.service';
-import { SessionService } from './session/session.service';
-import { CacheService } from './cache.service';
+import { AgentService } from '../agent.service';
+import { AiService } from '../../ai/ai.service';
+import { AgentToolService } from '../agent-tool.service';
+import { IntentRoutingService } from './intent-routing.service';
+import { SessionService } from '../session/session.service';
+import { CacheService } from '../cache.service';
 import { ConfigService } from '@nestjs/config';
 
 // 模拟配置服务
@@ -92,6 +93,7 @@ describe('AgentService - 意图识别分析', () => {
       providers: [
         AgentService,
         AgentToolService,
+        IntentRoutingService,
         {
           provide: AiService,
           useClass: MockAiService,

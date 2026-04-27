@@ -8,13 +8,17 @@ import {
   SlideTextStyle,
   CreateSlideBlock,
 } from './lark-slides.types';
+import { InstructionDetectorService } from '../../common/instruction-detector.service';
 
 @Injectable()
 export class LarkSlidesService {
   private readonly logger = new Logger(LarkSlidesService.name);
   private client: Lark.Client | null = null;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly instructionDetector: InstructionDetectorService,
+  ) {}
 
   initClient(client: Lark.Client) {
     this.client = client;
@@ -266,7 +270,17 @@ export class LarkSlidesService {
     text: string,
     style?: SlideTextStyle,
   ): Promise<string> {
-    const block = this.createTextSlideBlock(text, style);
+    // 检测是否为指令
+    const isInstruction = await this.instructionDetector.isInstruction(text);
+
+    let content = text;
+    if (isInstruction) {
+      this.logger.log(`检测到指令，正在处理: ${text}`);
+      // 处理指令，生成内容
+      content = await this.instructionDetector.processInstruction(text);
+    }
+
+    const block = this.createTextSlideBlock(content, style);
     return this.addSlideBlock(presentationId, pageId, block);
   }
 

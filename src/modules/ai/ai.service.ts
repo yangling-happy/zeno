@@ -21,7 +21,7 @@ interface ArkChatCompletionResponse {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private readonly maxRetries = 3;
-  private readonly timeout = 30000; // 30秒超时
+  private readonly timeout = 60000; // 60秒超时
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -129,7 +129,7 @@ export class AiService {
   private getFallbackResponse(text: string): string {
     // 简单的降级响应逻辑
     if (text.includes('你好') || text.includes('hello')) {
-      return '你好！我是 Zeno，你的跨端协同指挥官。';
+      return '你好！我是 Zeno，你的多端协同指挥官，负责需求→规划→生成→同步→汇报的全链路自动化。';
     } else if (text.includes('文档') || text.includes('doc')) {
       return '我理解你需要文档相关的帮助。请稍后重试，系统正在处理中。';
     } else if (text.includes('演示') || text.includes('ppt')) {

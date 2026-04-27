@@ -10,6 +10,55 @@ export type IntentType =
   | 'CLARIFY' // 意图模糊需追问
   | 'CHITCHAT'; // 基础闲聊
 
+export type SkillId =
+  | 'planning.skill'
+  | 'documentation.skill'
+  | 'presentation.skill'
+  | 'sync.skill'
+  | 'delivery.skill'
+  | 'identity.skill'
+  | 'safety.skill'
+  | 'clarify.skill'
+  | 'chitchat.skill';
+
+export type RiskLevel = 'low' | 'medium' | 'high';
+
+export interface SkillDefinition {
+  id: SkillId;
+  intent: IntentType;
+  domainGoal: string;
+  boundedContext:
+    | 'Planning'
+    | 'Documentation'
+    | 'Presentation/Whiteboard'
+    | 'Sync'
+    | 'Delivery'
+    | 'Conversation/Safety';
+  triggerHints: string[];
+  antiPatterns?: string[];
+  requiredParams: string[];
+  optionalParams?: string[];
+  confidenceThreshold: number;
+  riskLevel: RiskLevel;
+  fallbackIntent: IntentType;
+}
+
+export interface SkillMatch {
+  skillId: SkillId;
+  intent: IntentType;
+  confidence: number;
+  reason: string;
+  riskLevel: RiskLevel;
+  parameters: Record<string, unknown>;
+  missingRequiredParams: string[];
+  fallbackReason?: string;
+}
+
+export interface SkillExecutionPlan {
+  primarySkill: SkillMatch;
+  secondarySkills: SkillMatch[];
+}
+
 export interface PersonaProfile {
   id: string;
   name: string;
@@ -66,4 +115,6 @@ export interface AgentRunResult {
   trace: string[];
   // 结构化指令，用于飞书前端渲染卡片或执行跨端操作
   actionInstruction?: ActionInstruction;
+  // 技能化执行计划（V1：主技能为单项，次技能队列为空）
+  skillExecutionPlan?: SkillExecutionPlan;
 }
