@@ -27,8 +27,12 @@ export class AgentToolService {
     intent: IntentType,
     params: Record<string, any> | undefined,
     normalizedText: string,
+    confidence?: number,
   ): ActionInstruction {
-    if (!isLikelyActionRequest(normalizedText)) {
+    const CONFIDENCE_THRESHOLD = 0.6;
+    const isHighConfidence =
+      confidence !== undefined && confidence >= CONFIDENCE_THRESHOLD;
+    if (!isHighConfidence && !isLikelyActionRequest(normalizedText)) {
       this.logger.debug(`非执行请求，跳过动作指令生成: ${normalizedText}`);
       return { type: 'NONE' };
     }
@@ -103,6 +107,7 @@ export class AgentToolService {
       intent,
       primary.parameters,
       normalizedText,
+      primary.confidence,
     );
   }
 }
