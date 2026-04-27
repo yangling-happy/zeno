@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AiService } from '../../ai/ai.service';
-import { IntentType, SkillExecutionPlan } from '../agent.types';
+import { IntentType } from '../agent.types';
 import { IntentClassification, IntentSchema } from '../zod/agent-zod.schema';
 import {
   INTENT_RECOGNITION_EXAMPLES,
@@ -8,13 +8,15 @@ import {
   buildSkillPromptContext,
 } from '../skill/skill.registry';
 import { detectRequestNature } from '../../common/agent.utils';
+import { IntentTransformerService } from './intent-transformer.service';
 
-type RoutingSource = 'regex' | 'vector' | 'llm' | 'gate';
+type RoutingSource = 'regex' | 'transformer' | 'vector' | 'llm' | 'gate';
 
 type VectorCandidate = {
   intent: IntentType;
   score: number;
   exemplar: string;
+  retrieval: 'transformer' | 'vector';
 };
 
 interface RouteResult {
@@ -28,10 +30,17 @@ export class IntentRoutingService {
   private readonly logger = new Logger(IntentRoutingService.name);
   private readonly embeddingCache = new Map<string, Map<string, number>>();
   private readonly exemplarVectors = this.buildExemplarVectors();
+  private readonly exemplarEntries = this.buildExemplarEntries();
+  private readonly transformerAcceptThreshold = 0.84;
+  private readonly transformerReviewThreshold = 0.68;
   private readonly vectorAcceptThreshold = 0.75;
   private readonly vectorReviewThreshold = 0.6;
 
-  constructor(private readonly aiService: AiService) {}
+  constructor(
+    private readonly aiService: AiService,
+    @Optional()
+    private readonly transformerService?: IntentTransformerService,
+  ) {}
 
   async route(text: string): Promise<RouteResult> {
     const normalizedText = text.trim();
@@ -69,6 +78,54 @@ export class IntentRoutingService {
       };
     }
 
+    const transformerCandidates = await this.getTopTransformerCandidates(
+      normalizedText,
+      3,
+    );
+    const transformerMatch = transformerCandidates[0] ?? null;
+
+    if (
+      transformerMatch &&
+      transformerMatch.score >= this.transformerAcceptThreshold
+    ) {
+      return {
+        classification: {
+          intent: transformerMatch.intent,
+          confidence: Number(transformerMatch.score.toFixed(2)),
+          reason: `Transformer 语义检索高置信命中：${transformerMatch.exemplar}`,
+          parameters: {
+            routingSource: 'transformer',
+            similarity: Number(transformerMatch.score.toFixed(3)),
+            exemplar: transformerMatch.exemplar,
+          },
+        },
+        source: 'transformer',
+        candidates: [transformerMatch],
+      };
+    }
+
+    if (
+      transformerMatch &&
+      transformerMatch.score >= this.transformerReviewThreshold
+    ) {
+      const vectorHint = this.matchByVector(normalizedText);
+      const mergedCandidates = this.mergeCandidates(
+        transformerCandidates,
+        vectorHint ? [vectorHint] : [],
+        3,
+      );
+
+      const classification = await this.judgeWithLlm(
+        normalizedText,
+        mergedCandidates,
+      );
+      return {
+        classification,
+        source: 'llm',
+        candidates: mergedCandidates,
+      };
+    }
+
     const vectorMatch = this.matchByVector(normalizedText);
     if (vectorMatch && vectorMatch.score >= this.vectorAcceptThreshold) {
       return {
@@ -98,7 +155,11 @@ export class IntentRoutingService {
       };
     }
 
-    const topCandidates = this.getTopVectorCandidates(normalizedText, 3);
+    const topCandidates = this.mergeCandidates(
+      transformerCandidates,
+      this.getTopVectorCandidates(normalizedText, 3),
+      3,
+    );
     const classification = await this.judgeWithLlm(
       normalizedText,
       topCandidates,
@@ -144,6 +205,7 @@ export class IntentRoutingService {
         intent: item.intent,
         score,
         exemplar: item.exemplar,
+        retrieval: 'vector',
       });
     }
 
@@ -157,7 +219,7 @@ export class IntentRoutingService {
     const candidateText = candidates
       .map(
         (candidate, index) =>
-          `${index + 1}. ${candidate.intent} (相似度=${candidate.score.toFixed(3)}) 示例：${candidate.exemplar}`,
+          `${index + 1}. ${candidate.intent} (相似度=${candidate.score.toFixed(3)}; 来源=${candidate.retrieval}) 示例：${candidate.exemplar}`,
       )
       .join('\n');
 
@@ -191,6 +253,7 @@ ${buildSkillPromptContext()}
             intent: candidate.intent,
             score: Number(candidate.score.toFixed(3)),
             exemplar: candidate.exemplar,
+            retrieval: candidate.retrieval,
           })),
         },
       };
@@ -235,6 +298,74 @@ ${buildSkillPromptContext()}
     }
 
     return vectors;
+  }
+
+  private buildExemplarEntries(): Array<{
+    intent: IntentType;
+    exemplar: string;
+  }> {
+    const entries: Array<{ intent: IntentType; exemplar: string }> = [];
+
+    for (const [intent, examples] of Object.entries(
+      INTENT_RECOGNITION_EXAMPLES,
+    ) as [IntentType, string[]][]) {
+      for (const exemplar of examples) {
+        entries.push({ intent, exemplar });
+      }
+    }
+
+    return entries;
+  }
+
+  private async getTopTransformerCandidates(
+    text: string,
+    limit: number,
+  ): Promise<VectorCandidate[]> {
+    if (!this.transformerService?.isEnabled()) {
+      return [];
+    }
+
+    const scored: VectorCandidate[] = [];
+
+    for (const entry of this.exemplarEntries) {
+      const score = await this.transformerService.similarity(
+        text,
+        entry.exemplar,
+      );
+      if (score === null) {
+        continue;
+      }
+
+      scored.push({
+        intent: entry.intent,
+        exemplar: entry.exemplar,
+        score,
+        retrieval: 'transformer',
+      });
+    }
+
+    return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+  }
+
+  private mergeCandidates(
+    primary: VectorCandidate[],
+    secondary: VectorCandidate[],
+    limit: number,
+  ): VectorCandidate[] {
+    const merged = [...primary, ...secondary];
+    const dedup = new Map<string, VectorCandidate>();
+
+    for (const candidate of merged) {
+      const key = `${candidate.intent}:${candidate.exemplar}`;
+      const existing = dedup.get(key);
+      if (!existing || candidate.score > existing.score) {
+        dedup.set(key, candidate);
+      }
+    }
+
+    return [...dedup.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
   }
 
   private getEmbedding(text: string): Map<string, number> {
