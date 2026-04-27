@@ -233,14 +233,14 @@ export class LarkDocService {
   ): Promise<BlockCreationResult> {
     // 检测是否为指令
     const isInstruction = await this.instructionDetector.isInstruction(text);
-    
+
     let content = text;
     if (isInstruction) {
       this.logger.log(`检测到指令，正在处理: ${text}`);
       // 处理指令，生成内容
       content = await this.instructionDetector.processInstruction(text);
     }
-    
+
     const block = this.docWriter.createTextBlock(content);
     return this.addBlockToDocument(documentId, block, index);
   }

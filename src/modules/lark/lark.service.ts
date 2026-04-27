@@ -19,6 +19,18 @@ export interface LarkWebhookMessage {
   message_id?: string;
 }
 
+export interface LarkWebhookEvent {
+  sender?: {
+    sender_id?: {
+      open_id?: string;
+      user_id?: string;
+      union_id?: string;
+    };
+    sender_type?: string;
+  };
+  message?: LarkWebhookMessage;
+}
+
 @Injectable()
 export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LarkService.name);
@@ -68,6 +80,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       'im.message.receive_v1': (data) => {
         try {
           const message = data?.message as LarkWebhookMessage | undefined;
+          const senderOpenId = data?.sender?.sender_id?.open_id;
 
           if (!message) {
             this.logger.warn('⚠️ 接收到的消息数据不完整');
@@ -90,7 +103,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
           this.logger.log(`📩 收到消息: ${text}`);
 
           // 这里不要阻塞事件回调，避免因为 AI 调用耗时导致飞书重试同一条事件。
-          void this.processMessage(message, text);
+          void this.processMessage(message, text, senderOpenId);
         } catch (error) {
           this.logger.error('❌ 处理消息事件失败:', error);
         }
@@ -194,13 +207,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async processMessage(message: LarkWebhookMessage, text: string) {
+  private async processMessage(
+    message: LarkWebhookMessage,
+    text: string,
+    senderOpenId?: string,
+  ) {
     this.logger.log(`📋 开始处理消息: ${message.message_id || 'unknown'}`);
     try {
       this.logger.log(`🤖 调用 Agent 服务处理消息`);
       const result = await this.agentService.run({
         text,
-        userId: message.open_id,
+        userId: senderOpenId,
         channel: 'lark',
       });
       this.logger.log(
@@ -269,10 +286,17 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      if (!senderOpenId) {
+        this.logger.warn('⚠️ 缺少 open_id，无法发送卡片');
+        return;
+      }
+
       this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
-      this.logger.log(`💬 准备回复消息: ${message.message_id || 'unknown'}`);
-      await this.reply(message.message_id, replyText);
-      this.logger.log(`✅ 消息处理完成: ${message.message_id || 'unknown'}`);
+      this.logger.log(`💬 准备发送卡片: ${message.message_id || 'unknown'}`);
+      await this.sendCardToUser(senderOpenId, {
+        message: replyText,
+      });
+      this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
     } catch (error) {
       if (message.message_id) {
         this.processedMessageTimestamps.delete(message.message_id);
@@ -399,6 +423,60 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         msg_type: 'text',
         content: JSON.stringify({ text }),
       },
+    });
+  }
+
+  async sendCard(params: {
+    receiveId: string;
+    receiveIdType: 'open_id' | 'user_id' | 'chat_id';
+    cardData?: Record<string, any>;
+  }) {
+    if (!this.client) {
+      throw new Error('飞书客户端未初始化');
+    }
+
+    this.logger.log(`📤 开始发送卡片: receiveId=${params.receiveId}`);
+
+    await this.client.im.message.create({
+      data: {
+        receive_id: params.receiveId,
+        msg_type: 'interactive',
+        content: JSON.stringify({
+          config: {
+            wide_screen_mode: true,
+          },
+          elements: [
+            {
+              tag: 'div',
+              text: {
+                content: params.cardData?.message || '',
+                tag: 'lark_md',
+              },
+            },
+          ],
+        }),
+      },
+      params: {
+        receive_id_type: params.receiveIdType,
+      },
+    });
+
+    this.logger.log(`✅ 卡片发送成功`);
+  }
+
+  async sendCardToUser(openId: string, cardData?: Record<string, any>) {
+    return this.sendCard({
+      receiveId: openId,
+      receiveIdType: 'open_id',
+      cardData,
+    });
+  }
+
+  async sendCardToChat(chatId: string, cardData?: Record<string, any>) {
+    return this.sendCard({
+      receiveId: chatId,
+      receiveIdType: 'chat_id',
+      cardData,
     });
   }
 
