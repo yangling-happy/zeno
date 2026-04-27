@@ -286,16 +286,33 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      if (!senderOpenId) {
-        this.logger.warn('⚠️ 缺少 open_id，无法发送卡片');
+      // 即使没有 open_id，也可以通过 message_id 回复消息
+      if (!senderOpenId && !message.message_id) {
+        this.logger.warn('⚠️ 缺少 open_id 和 message_id，无法发送卡片');
         return;
       }
 
       this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
       this.logger.log(`💬 准备发送卡片: ${message.message_id || 'unknown'}`);
-      await this.sendCardToUser(senderOpenId, {
-        message: replyText,
-      });
+
+      // 优先使用 reply 方法回复消息，这样可以保持消息的上下文关系
+      if (message.message_id) {
+        this.logger.log(`📢 使用 reply 方法回复消息: ${message.message_id}`);
+        await this.reply(message.message_id, replyText);
+      } else if (message.chat_id) {
+        // 如果没有 message_id，则使用 sendCardToChat 方法发送到群聊
+        this.logger.log(`📢 消息来自群聊，发送到群聊: ${message.chat_id}`);
+        await this.sendCardToChat(message.chat_id, {
+          message: replyText,
+        });
+      } else if (senderOpenId) {
+        // 如果没有 message_id 和 chat_id，则使用 sendCardToUser 方法发送到私聊
+        this.logger.log(`💬 消息来自私聊，发送到私聊: ${senderOpenId}`);
+        await this.sendCardToUser(senderOpenId, {
+          message: replyText,
+        });
+      }
+
       this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
     } catch (error) {
       if (message.message_id) {
@@ -420,8 +437,21 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         message_id: messageId,
       },
       data: {
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
+        msg_type: 'interactive',
+        content: JSON.stringify({
+          config: {
+            wide_screen_mode: true,
+          },
+          elements: [
+            {
+              tag: 'div',
+              text: {
+                content: text || '',
+                tag: 'lark_md',
+              },
+            },
+          ],
+        }),
       },
     });
   }

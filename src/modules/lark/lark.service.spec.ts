@@ -163,8 +163,21 @@ describe('LarkService', () => {
         message_id: 'om_test_msg_id',
       },
       data: {
-        msg_type: 'text',
-        content: JSON.stringify({ text: '豆包回复' }),
+        msg_type: 'interactive',
+        content: JSON.stringify({
+          config: {
+            wide_screen_mode: true,
+          },
+          elements: [
+            {
+              tag: 'div',
+              text: {
+                content: '豆包回复',
+                tag: 'lark_md',
+              },
+            },
+          ],
+        }),
       },
     });
   });
@@ -360,11 +373,17 @@ describe('LarkService', () => {
     expect(replyMock).toHaveBeenCalledTimes(1);
     const replyPayload = replyMock.mock.calls[0][0];
     expect(replyPayload.path.message_id).toBe('om_doc_create_test_id');
-    expect(replyPayload.data.msg_type).toBe('text');
+    expect(replyPayload.data.msg_type).toBe('interactive');
 
     const parsedContent = JSON.parse(replyPayload.data.content) as {
-      text: string;
+      elements: Array<{
+        text: {
+          content: string;
+        };
+      }>;
     };
-    expect(parsedContent.text).toContain('https://feishu.cn/docx/doc_test_123');
+    expect(parsedContent.elements[0].text.content).toContain(
+      'https://feishu.cn/docx/doc_test_123',
+    );
   });
 });
