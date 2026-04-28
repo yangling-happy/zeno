@@ -42,33 +42,38 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ['CMD', 'ollama', 'list'] 
+      test: ['CMD', 'ollama', 'list']
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 40s  
+      start_period: 40s
     networks:
       - zeno-network
 
   app:
-    image: zeno-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     container_name: zeno-app
     ports:
       - '3000:3000'
     env_file:
-      - .env  
+      - .env
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - REDIS_URL=redis://zeno-redis:6379
       - DATABASE_URL=postgresql://zeno_user:zeno_password@zeno-postgres:5432/zeno
       - OLLAMA_BASE_URL=http://zeno-ollama:11434
+    volumes:
+      - ./src:/app/src
+      - ./prisma:/app/prisma
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
       ollama:
-        condition: service_started  
+        condition: service_started
     networks:
       - zeno-network
 

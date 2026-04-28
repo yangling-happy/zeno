@@ -155,7 +155,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.wsClient
       .start({ eventDispatcher: this.eventDispatcher })
       .then(() => {
-        this.logger.log('✅ 飞书长连接已成功建立并开始监听事件');
+        this.logger.log('✅飞书长连接已成功建立并开始监听事件');
       })
       .catch((err) => {
         this.logger.error('❌ 飞书长连接启动失败:', err);
@@ -176,7 +176,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     if (!messageId) {
       return false;
     }
-
     this.cleanupProcessedMessages();
 
     if (this.processedMessageTimestamps.has(messageId)) {

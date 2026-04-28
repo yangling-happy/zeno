@@ -1,0 +1,23 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm install -g pnpm && \
+    pnpm config set registry https://registry.npmmirror.com
+
+COPY package.json pnpm-lock.yaml ./
+
+RUN pnpm install
+
+COPY prisma ./prisma
+COPY tsconfig.json tsconfig.build.json nest-cli.json ./
+
+RUN npx prisma generate
+
+ENV NODE_ENV=development
+ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
+
+EXPOSE 3000
+
+CMD ["pnpm", "start:dev"]
