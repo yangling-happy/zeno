@@ -11,9 +11,10 @@ import { SessionService } from './modules/agent/session/session.service';
 import { CacheService } from './modules/agent/cache.service';
 import { LarkService } from './modules/lark/lark.service';
 import { InstructionDetectorService } from './modules/common/instruction-detector.service';
+import { MemoryModule } from './modules/memory/memory.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true })],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), MemoryModule],
   controllers: [AppController],
   providers: [
     AppService,

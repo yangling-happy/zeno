@@ -72,6 +72,22 @@ export interface AgentRunInput {
   text: string;
   userId?: string;
   channel?: string;
+  memoryContext?: {
+    recentConversations: Array<{
+      role: 'user' | 'assistant';
+      content: string;
+      timestamp: number;
+    }>;
+    retrievedFacts: Array<{
+      id: string;
+      userId: string;
+      content: string;
+      category: string;
+      embedding: number[];
+      createdAt: number;
+    }>;
+    conversationTurnCount: number;
+  };
 }
 
 export type ActionInstruction =

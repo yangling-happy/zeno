@@ -1,0 +1,82 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: zeno-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - zeno-network
+
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: zeno-postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: zeno_user
+      POSTGRES_PASSWORD: zeno_password
+      POSTGRES_DB: zeno
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U zeno_user -d zeno']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    command: ['postgres', '-c', 'shared_preload_libraries=vector']
+    networks:
+      - zeno-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zeno-ollama
+    ports:
+      - '11434:11434'
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']  # 改用 ollama list 代替 curl
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s  # 给足启动时间
+    networks:
+      - zeno-network
+
+  app:
+    image: zeno-app:latest
+    container_name: zeno-app
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env  # 添加这行，加载环境变量文件
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://zeno-redis:6379
+      - DATABASE_URL=postgresql://zeno_user:zeno_password@zeno-postgres:5432/zeno
+      - OLLAMA_BASE_URL=http://zeno-ollama:11434
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started  # 改为只等待启动，不等待健康检查
+    networks:
+      - zeno-network
+
+volumes:
+  redis_data:
+  postgres_data:
+  ollama_data:
+
+networks:
+  zeno-network:
+    driver: bridge

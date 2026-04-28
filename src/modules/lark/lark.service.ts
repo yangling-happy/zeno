@@ -11,6 +11,7 @@ import { ActionInstruction } from '../agent/agent.types';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
+import { MemoryService } from '../memory/memory.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -51,6 +52,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly agentService: AgentService,
     private readonly instructionDetector: InstructionDetectorService,
+    private readonly memoryService: MemoryService,
   ) {
     this.docService = new LarkDocService(configService, instructionDetector);
     this.slidesService = new LarkSlidesService(
@@ -213,12 +215,36 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     senderOpenId?: string,
   ) {
     this.logger.log(`📋 开始处理消息: ${message.message_id || 'unknown'}`);
+    const userId = senderOpenId || 'anonymous';
+
     try {
+      await this.memoryService.addConversationTurn(userId, 'user', text, {
+        messageId: message.message_id,
+      });
+
+      const shouldSummarize =
+        await this.memoryService.shouldTriggerSummarization(userId);
+      if (shouldSummarize) {
+        this.logger.log(`📊 达到10轮对话，触发 Summary & Vectorize`);
+        const recentConversations =
+          await this.memoryService.getRecentConversations(userId);
+        await this.memoryService.extractAndStoreFacts(
+          userId,
+          recentConversations,
+        );
+      }
+
+      const memoryContext = await this.memoryService.buildContextBackground(
+        userId,
+        text,
+      );
+
       this.logger.log(`🤖 调用 Agent 服务处理消息`);
       const result = await this.agentService.run({
         text,
-        userId: senderOpenId,
+        userId,
         channel: 'lark',
+        memoryContext,
       });
       this.logger.log(
         `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
@@ -314,6 +340,16 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
+
+      await this.memoryService.addConversationTurn(
+        userId,
+        'assistant',
+        replyText,
+        {
+          messageId: message.message_id,
+          intent: result.intent,
+        },
+      );
     } catch (error) {
       if (message.message_id) {
         this.processedMessageTimestamps.delete(message.message_id);

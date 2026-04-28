@@ -293,8 +293,25 @@ export class AgentService {
       })
       // 通用回复节点
       .addNode('general_chat', async (state) => {
+        const memoryContext = state.userInput.memoryContext;
+        let contextBackground = '';
+
+        if (memoryContext && memoryContext.retrievedFacts.length > 0) {
+          const factsSummary = memoryContext.retrievedFacts
+            .map((fact) => `[${fact.category}] ${fact.content}`)
+            .join('\n');
+          contextBackground = `\n\n【用户背景信息】\n以下是你从长期记忆中检索到的相关事实：\n${factsSummary}\n`;
+        }
+
+        if (memoryContext && memoryContext.recentConversations.length > 0) {
+          const recentSummary = memoryContext.recentConversations
+            .map((turn) => `${turn.role}: ${turn.content}`)
+            .join('\n');
+          contextBackground += `\n【最近对话】\n${recentSummary}\n`;
+        }
+
         const responseText = await this.aiService.chat(
-          `你是${state.persona.name}，身份是${state.persona.role}。你的职责是“需求→规划→生成→同步→汇报”的全链路自动化协作。请以专业、高效、具备行动力的口吻回答：${state.normalizedText}`,
+          `你是${state.persona.name}，身份是${state.persona.role}。你的职责是"需求→规划→生成→同步→汇报"的全链路自动化协作。请以专业、高效、具备行动力的口吻回答：${state.normalizedText}${contextBackground}`,
         );
         const response = buildResponse(responseText);
         return updateStateWithTrace(state, response, 'general_chat');

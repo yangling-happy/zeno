@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.example
+Dockerfile
+docker-compose.yml
+dist
+coverage
+prisma/migrations

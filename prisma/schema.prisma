@@ -1,0 +1,41 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ConversationHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  role      String   @db.VarChar(50)
+  content   String   @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model FactSnippet {
+  id                   String    @id @default(cuid())
+  userId               String
+  content              String    @db.Text
+  category             String    @db.VarChar(50)
+  embedding            String    @db.Text
+  createdAt            DateTime  @default(now())
+  sourceConversationTurn Int?
+
+  @@index([userId])
+}
+
+model UserSession {
+  userId       String   @id
+  sessionData  Json
+  lastActive   DateTime @default(now())
+  createdAt    DateTime @default(now())
+}
