@@ -1,98 +1,174 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Zeno
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+企业级智能对话平台，集成飞书消息接入、多模态大模型能力、长时记忆管理系统。
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 技术栈
 
-## Description
+- 框架: NestJS
+- 语言: TypeScript
+- 数据库: PostgreSQL + pgvector
+- 缓存: Redis
+- ORM: Prisma
+- AI 能力: 字节跳动 ARK、Ollama
+- 部署: Docker / Docker Compose
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## 环境要求
 
-## Project setup
+- Node.js >= 20
+- pnpm >= 8
+- Docker (可选，用于依赖服务部署)
 
-```bash
-$ pnpm install
-```
+## 快速开始
 
-## Compile and run the project
+### 方式一：Docker 完整部署（推荐）
+
+所有服务（后端应用 + 依赖服务）均运行在 Docker 容器中，无需安装任何本地环境。
+
+1. 配置环境变量
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+cp .env.example .env
+# 编辑 .env 文件，填写飞书、ARK 等必要配置信息
 ```
 
-## Run tests
+2. 启动所有服务
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+docker-compose up -d
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+3. 执行数据库迁移
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+docker exec -it zeno-app npx prisma migrate dev --name init
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+4. 下载 Ollama 向量模型
 
-## Resources
+```bash
+docker exec -it zeno-ollama ollama run nomic-embed-text
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+5. 验证服务状态
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+docker-compose ps
+# 所有服务状态应为 Up (healthy)
+```
 
-## Support
+### 方式二：本地开发模式
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+适用于需要本地代码热更新的开发场景。
 
-## Stay in touch
+1. 安装依赖
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```bash
+pnpm install
+```
 
-## License
+2. 启动依赖服务
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```bash
+docker-compose up -d redis postgres ollama
+```
+
+3. 配置环境变量
+
+```bash
+cp .env.example .env
+# 编辑 .env 文件，填写必要的配置信息
+```
+
+4. 数据库迁移
+
+```bash
+npx prisma migrate dev --name init
+```
+
+5. 启动开发服务
+
+```bash
+pnpm run start:dev
+```
+
+## 服务端口
+
+| 服务       | 端口  | 说明                   |
+| ---------- | ----- | ---------------------- |
+| 主应用     | 3000  | API 服务               |
+| Redis      | 6379  | 缓存和即时上下文存储   |
+| PostgreSQL | 5432  | 关系型数据库和向量存储 |
+| Ollama     | 11434 | 向量生成服务           |
+
+## 常用命令
+
+### Docker 部署相关
+
+```bash
+# 构建应用镜像（代码修改后需要重新执行）
+docker build -t zeno-app .
+
+# 启动所有服务
+docker-compose up -d
+
+# 重启指定服务
+docker-compose restart [服务名]
+
+# 查看服务状态
+docker-compose ps
+
+# 查看服务日志
+docker-compose logs -f [服务名]
+
+# 停止所有服务
+docker-compose down
+
+# 停止所有服务并删除数据卷（谨慎使用）
+docker-compose down -v
+
+# 进入应用容器执行命令
+docker exec -it zeno-app bash
+```
+
+### 开发相关
+
+```bash
+# 开发模式启动
+pnpm run start:dev
+
+# 生产构建
+pnpm run build
+
+# 生产模式启动
+pnpm run start:prod
+
+# 生成 Prisma Client
+npx prisma generate
+
+# 创建数据库迁移
+npx prisma migrate dev
+
+# 数据库可视化工具
+npx prisma studio
+```
+
+## 项目结构
+
+```
+src/
+├── modules/
+│   ├── lark/          # 飞书消息接入模块
+│   ├── agent/         # 智能代理模块
+│   ├── memory/        # 记忆管理模块
+│   └── common/        # 公共组件
+└── main.ts            # 应用入口
+```
+
+## 核心功能
+
+- 飞书长连接消息接入
+- 多轮对话上下文管理
+- 三层记忆存储架构（Redis/PostgreSQL/pgvector）
+- 自动事实提取和向量存储
+- 语义检索长期记忆
+- 意图识别和任务调度
