@@ -233,6 +233,11 @@ ${candidateText || '无'}
 意图定义：
 ${buildSkillPromptContext()}
 
+参数提取规则：
+- 当意图为 SCENE_DOC（文档场景）时，parameters.docTitle 应为文档标题（如用户说"创建文档"但未指定标题，使用默认标题），parameters.summary 应为文档主题内容（如用户说"写关于XX"，则 XX 为主题，不是原文）
+- 当意图为 SCENE_PRESENT（演示场景）时，parameters.presentTitle 应为演示标题，parameters.summary 应为演示内容主题
+- 示例：用户输入"给我创建一个文档，写意图识别的"，则 docTitle="意图识别"或默认标题，summary="意图识别"（主题，不是原文）
+
 请只返回严格 JSON：
 {"intent":"...","confidence":0-1,"reason":"...","parameters":{}}
 

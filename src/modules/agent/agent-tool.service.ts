@@ -23,6 +23,26 @@ export class AgentToolService {
     'chitchat.skill': 'CHITCHAT',
   };
 
+  private extractTopicFromText(text: string): string | undefined {
+    const patterns = [
+      /写(?:关于|)([^\s，,。!！?？]+(?:的?[^\s，,。!！?？]+)?)/,
+      /创建.*文档.*写([^，,。!！?？]+)/,
+      /生成.*文档.*写([^，,。!！?？]+)/,
+      /文档.*写([^，,。!！?？]+)/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        const topic = match[1].trim();
+        if (topic.length >= 2 && topic.length <= 50) {
+          return topic;
+        }
+      }
+    }
+    return undefined;
+  }
+
   buildActionInstruction(
     intent: IntentType,
     params: Record<string, any> | undefined,
@@ -49,14 +69,15 @@ export class AgentToolService {
         : `Zeno 演示-${new Date().toLocaleString('zh-CN')}`;
 
     if (intent === 'SCENE_DOC') {
+      const summaryContent =
+        typeof params?.summary === 'string' && params.summary.trim().length > 0
+          ? params.summary.trim()
+          : this.extractTopicFromText(normalizedText);
       return {
         type: 'LARK_DOC_CREATE',
         params: {
           title: docTitle,
-          summary:
-            typeof params?.summary === 'string'
-              ? params.summary
-              : normalizedText.slice(0, 120),
+          ...(summaryContent !== undefined && { summary: summaryContent }),
         },
       };
     }
@@ -66,26 +87,32 @@ export class AgentToolService {
         typeof params?.whiteboardId === 'string' &&
         params.whiteboardId.trim().length > 0
       ) {
+        const textContent =
+          typeof params?.summary === 'string' &&
+          params.summary.trim().length > 0
+            ? params.summary
+            : this.extractTopicFromText(normalizedText);
+        if (textContent === undefined) {
+          return { type: 'NONE' };
+        }
         return {
           type: 'LARK_WHITEBOARD_APPEND',
           params: {
             whiteboardId: params.whiteboardId.trim(),
-            text:
-              typeof params?.summary === 'string'
-                ? params.summary
-                : normalizedText.slice(0, 200),
+            text: textContent,
           },
         };
       }
 
+      const summaryContent =
+        typeof params?.summary === 'string' && params.summary.trim().length > 0
+          ? params.summary.trim()
+          : this.extractTopicFromText(normalizedText);
       return {
         type: 'LARK_DOC_PRESENT_LINK',
         params: {
           title: presentTitle,
-          summary:
-            typeof params?.summary === 'string'
-              ? params.summary
-              : normalizedText.slice(0, 120),
+          ...(summaryContent !== undefined && { summary: summaryContent }),
         },
       };
     }

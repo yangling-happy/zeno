@@ -21,7 +21,7 @@ interface ArkChatCompletionResponse {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private readonly maxRetries = 3;
-  private readonly timeout = 60000; // 60秒超时
+  private readonly timeout = 600000; // 60秒超时
 
   constructor(private readonly configService: ConfigService) {}
 

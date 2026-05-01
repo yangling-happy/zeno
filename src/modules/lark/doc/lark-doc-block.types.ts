@@ -42,6 +42,74 @@ export interface BlockChildren {
       folded?: boolean;
     };
   };
+  heading1?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  heading2?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  heading3?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  heading4?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  heading5?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  heading6?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  bullet?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  ordered?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  todo?: {
+    elements: TextElement[];
+    style?: {
+      done?: boolean;
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  code?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  quote?: {
+    elements: TextElement[];
+    style?: {
+      align?: 'LEFT' | 'CENTER' | 'RIGHT';
+    };
+  };
+  divider?: Record<string, never>;
   table?: {
     cells: string[][];
     property?: {

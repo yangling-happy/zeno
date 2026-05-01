@@ -365,6 +365,18 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     return urlMatch ? urlMatch[1] : null;
   }
 
+  private async generateContentFromTopic(topic: string): Promise<string> {
+    try {
+      const content = await this.instructionDetector.processInstruction(
+        `生成关于"${topic}"的完整文档内容，包括定义、要点、应用场景和总结，用Markdown格式输出`,
+      );
+      return content || `# ${topic}\n\n关于${topic}的详细内容。`;
+    } catch (error) {
+      this.logger.error(`生成主题内容失败: ${(error as Error).message}`);
+      return `# ${topic}\n\n关于${topic}的详细内容。`;
+    }
+  }
+
   private async executeActionInstruction(
     action: ActionInstruction,
     _message: LarkWebhookMessage,
@@ -382,9 +394,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
               ? doc.url
               : `https://feishu.cn/docx/${doc.documentId}`;
           if (action.params.summary) {
+            const contentToWrite =
+              action.params.summary.length <= 20
+                ? await this.generateContentFromTopic(action.params.summary)
+                : action.params.summary;
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
-              action.params.summary,
+              contentToWrite,
             );
           }
           return `📄 文档已创建：${docUrl}`;
@@ -412,9 +428,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
           );
 
           if (action.params.summary) {
+            const contentToWrite =
+              action.params.summary.length <= 20
+                ? await this.generateContentFromTopic(action.params.summary)
+                : action.params.summary;
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
-              action.params.summary,
+              contentToWrite,
             );
           }
 

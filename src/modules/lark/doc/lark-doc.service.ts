@@ -98,24 +98,33 @@ export class LarkDocService {
       throw new Error('飞书客户端未初始化');
     }
 
-    const response = await (
-      this.client as any
-    ).docx.v1.documentBlockChildren.create({
-      path: {
-        document_id: documentId,
-        block_id: documentId,
-      },
-      data: {
-        children: blocks,
-      },
-    });
+    const MAX_BLOCKS_PER_REQUEST = 50;
+    const allBlockIds: string[] = [];
 
-    const blockIds =
-      response?.data?.children?.map((child: any) => child.block_id) || [];
-    this.logger.log(`✅ 批量添加 ${blockIds.length} 个块到文档`);
+    for (let i = 0; i < blocks.length; i += MAX_BLOCKS_PER_REQUEST) {
+      const batch = blocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
+
+      const response = await (
+        this.client as any
+      ).docx.v1.documentBlockChildren.create({
+        path: {
+          document_id: documentId,
+          block_id: documentId,
+        },
+        data: {
+          children: batch,
+        },
+      });
+
+      const blockIds =
+        response?.data?.children?.map((child: any) => child.block_id) || [];
+      allBlockIds.push(...blockIds);
+    }
+
+    this.logger.log(`✅ 批量添加 ${allBlockIds.length} 个块到文档`);
 
     return {
-      blockIds,
+      blockIds: allBlockIds,
       parentBlockId: documentId,
     };
   }
@@ -130,25 +139,33 @@ export class LarkDocService {
     }
 
     const children = blocks.map((block) => this.convertToBlockChildren(block));
+    const MAX_BLOCKS_PER_REQUEST = 50;
+    const allBlockIds: string[] = [];
 
-    const response = await (
-      this.client as any
-    ).docx.v1.documentBlockChildren.create({
-      path: {
-        document_id: documentId,
-        block_id: parentBlockId,
-      },
-      data: {
-        children,
-      },
-    });
+    for (let i = 0; i < children.length; i += MAX_BLOCKS_PER_REQUEST) {
+      const batch = children.slice(i, i + MAX_BLOCKS_PER_REQUEST);
 
-    const blockIds =
-      response?.data?.children?.map((child: any) => child.block_id) || [];
-    this.logger.log(`✅ 创建嵌套块 ${blockIds.length} 个`);
+      const response = await (
+        this.client as any
+      ).docx.v1.documentBlockChildren.create({
+        path: {
+          document_id: documentId,
+          block_id: parentBlockId,
+        },
+        data: {
+          children: batch,
+        },
+      });
+
+      const blockIds =
+        response?.data?.children?.map((child: any) => child.block_id) || [];
+      allBlockIds.push(...blockIds);
+    }
+
+    this.logger.log(`✅ 创建嵌套块 ${allBlockIds.length} 个`);
 
     return {
-      blockIds,
+      blockIds: allBlockIds,
       parentBlockId,
     };
   }
@@ -279,22 +296,52 @@ export class LarkDocService {
     index?: number,
   ): Promise<BatchBlockCreationResult> {
     const blocks = this.docWriter.parseMarkdownToBlocks(markdown);
-    if (index !== undefined) {
-      const results: BatchBlockCreationResult = {
-        blockIds: [],
-        parentBlockId: documentId,
-      };
-      for (let i = 0; i < blocks.length; i++) {
-        const result = await this.addBlockToDocument(
-          documentId,
-          blocks[i],
-          index + i,
-        );
-        results.blockIds.push(result.blockId);
-      }
-      return results;
+    return this.addBlocksToDocumentWithIndex(documentId, blocks, index);
+  }
+
+  private async addBlocksToDocumentWithIndex(
+    documentId: string,
+    blocks: BlockChildren[],
+    startIndex?: number,
+  ): Promise<BatchBlockCreationResult> {
+    if (!this.client) {
+      throw new Error('飞书客户端未初始化');
     }
-    return this.addBlocksToDocument(documentId, blocks);
+
+    const MAX_BLOCKS_PER_REQUEST = 50;
+    const allBlockIds: string[] = [];
+    let currentIndex = startIndex ?? 0;
+
+    for (let i = 0; i < blocks.length; i += MAX_BLOCKS_PER_REQUEST) {
+      const batch = blocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
+
+      const response = await (
+        this.client as any
+      ).docx.v1.documentBlockChildren.create({
+        path: {
+          document_id: documentId,
+          block_id: documentId,
+        },
+        params: {
+          index: currentIndex,
+        },
+        data: {
+          children: batch,
+        },
+      });
+
+      const blockIds =
+        response?.data?.children?.map((child: any) => child.block_id) || [];
+      allBlockIds.push(...blockIds);
+      currentIndex += blockIds.length;
+    }
+
+    this.logger.log(`✅ 批量添加 ${allBlockIds.length} 个块到文档`);
+
+    return {
+      blockIds: allBlockIds,
+      parentBlockId: documentId,
+    };
   }
 
   async appendTableToDocument(

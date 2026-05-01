@@ -50,6 +50,15 @@ export class LarkDocWriterService {
       6: 'HEADING6',
     };
 
+    const fieldMap: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
+      1: 'heading1',
+      2: 'heading2',
+      3: 'heading3',
+      4: 'heading4',
+      5: 'heading5',
+      6: 'heading6',
+    };
+
     const element: TextElement = {
       text_run: {
         content,
@@ -60,9 +69,12 @@ export class LarkDocWriterService {
       element.text_run.text_element_style = style;
     }
 
+    const blockType = BLOCK_TYPE_MAP[typeMap[level]];
+    const fieldName = fieldMap[level];
+
     return {
-      block_type: BLOCK_TYPE_MAP[typeMap[level]],
-      text: {
+      block_type: blockType,
+      [fieldName]: {
         elements: [element],
       },
     };
@@ -84,7 +96,7 @@ export class LarkDocWriterService {
 
     return {
       block_type: BLOCK_TYPE_MAP.BULLET,
-      text: {
+      bullet: {
         elements: [element],
       },
     };
@@ -106,7 +118,7 @@ export class LarkDocWriterService {
 
     return {
       block_type: BLOCK_TYPE_MAP.ORDERED,
-      text: {
+      ordered: {
         elements: [element],
       },
     };
@@ -129,10 +141,10 @@ export class LarkDocWriterService {
 
     return {
       block_type: BLOCK_TYPE_MAP.TODO,
-      text: {
+      todo: {
         elements: [element],
         style: {
-          folded: !checked,
+          done: checked,
         },
       },
     };
@@ -155,7 +167,7 @@ export class LarkDocWriterService {
 
     return {
       block_type: BLOCK_TYPE_MAP.CODE,
-      text: {
+      code: {
         elements: [element],
       },
     };
@@ -177,7 +189,7 @@ export class LarkDocWriterService {
 
     return {
       block_type: BLOCK_TYPE_MAP.QUOTE,
-      text: {
+      quote: {
         elements: [element],
       },
     };
@@ -186,6 +198,7 @@ export class LarkDocWriterService {
   createDividerBlock(): BlockChildren {
     return {
       block_type: BLOCK_TYPE_MAP.DIVIDER,
+      divider: {},
     };
   }
 
