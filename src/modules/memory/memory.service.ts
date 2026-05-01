@@ -89,9 +89,7 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     try {
-      const {
-        OllamaEmbeddings,
-      } = require('@langchain/community/embeddings/ollama');
+      const { OllamaEmbeddings } = require('@langchain/ollama');
       this.vectorStore = {
         embeddings: new OllamaEmbeddings({
           model: 'nomic-embed-text',
