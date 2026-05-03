@@ -32,6 +32,39 @@ export interface LarkWebhookEvent {
   message?: LarkWebhookMessage;
 }
 
+interface LarkCardData {
+  message?: string;
+}
+
+interface LarkWhiteboardNodeCreateResponse {
+  data?: {
+    node_id?: string;
+    id?: string;
+  };
+}
+
+interface LarkBoardClient {
+  board: {
+    v1: {
+      whiteboardNode: {
+        create(params: {
+          path: {
+            whiteboard_id: string;
+          };
+          data: {
+            type: 'TEXT';
+            text: string;
+          };
+        }): Promise<LarkWhiteboardNodeCreateResponse>;
+      };
+    };
+  };
+}
+
+interface StoppableWsClient {
+  stop?: () => void | Promise<void>;
+}
+
 @Injectable()
 export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LarkService.name);
@@ -200,11 +233,10 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     while (
       this.processedMessageTimestamps.size > this.processedMessageMaxSize
     ) {
-      const oldest = this.processedMessageTimestamps.keys().next().value;
-      if (!oldest) {
+      for (const oldest of this.processedMessageTimestamps.keys()) {
+        this.processedMessageTimestamps.delete(oldest);
         break;
       }
-      this.processedMessageTimestamps.delete(oldest);
     }
   }
 
@@ -262,7 +294,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(`⚡ 执行动作指令: ${result.actionInstruction.type}`);
         const actionResult = await this.executeActionInstruction(
           result.actionInstruction,
-          message,
         );
         if (actionResult) {
           replyText = `${replyText}\n\n${actionResult}`;
@@ -379,7 +410,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
   private async executeActionInstruction(
     action: ActionInstruction,
-    _message: LarkWebhookMessage,
   ): Promise<string> {
     if (!this.client || action.type === 'NONE') {
       return '';
@@ -458,7 +488,8 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     whiteboardId: string,
     text: string,
   ): Promise<string> {
-    const response = await (this.client as any).board.v1.whiteboardNode.create({
+    const boardClient = this.client as unknown as LarkBoardClient;
+    const response = await boardClient.board.v1.whiteboardNode.create({
       path: {
         whiteboard_id: whiteboardId,
       },
@@ -468,7 +499,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const nodeId = response?.data?.node_id || response?.data?.id;
+    const nodeId = response.data?.node_id || response.data?.id;
     if (!nodeId) {
       throw new Error('白板写入失败，未返回 node_id');
     }
@@ -514,7 +545,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   async sendCard(params: {
     receiveId: string;
     receiveIdType: 'open_id' | 'user_id' | 'chat_id';
-    cardData?: Record<string, any>;
+    cardData?: LarkCardData;
   }) {
     if (!this.client) {
       throw new Error('飞书客户端未初始化');
@@ -534,7 +565,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
             {
               tag: 'div',
               text: {
-                content: params.cardData?.message || '',
+                content: params.cardData?.message ?? '',
                 tag: 'lark_md',
               },
             },
@@ -549,7 +580,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`✅ 卡片发送成功`);
   }
 
-  async sendCardToUser(openId: string, cardData?: Record<string, any>) {
+  async sendCardToUser(openId: string, cardData?: LarkCardData) {
     return this.sendCard({
       receiveId: openId,
       receiveIdType: 'open_id',
@@ -557,7 +588,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async sendCardToChat(chatId: string, cardData?: Record<string, any>) {
+  async sendCardToChat(chatId: string, cardData?: LarkCardData) {
     return this.sendCard({
       receiveId: chatId,
       receiveIdType: 'chat_id',
@@ -567,8 +598,9 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy() {
     this.logger.log('🔌 正在释放飞书长连接资源...');
-    if (this.wsClient && (this.wsClient as any).stop) {
-      await (this.wsClient as any).stop();
+    const stoppableWsClient = this.wsClient as StoppableWsClient | null;
+    if (stoppableWsClient?.stop) {
+      await stoppableWsClient.stop();
     }
   }
 }

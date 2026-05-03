@@ -11,6 +11,78 @@ import {
 } from './lark-doc-block.types';
 import { InstructionDetectorService } from '../../common/instruction-detector.service';
 
+/** SDK Client 类型未暴露 docx，按需收窄以避免 unsafe any */
+interface LarkDocxDocumentCreateResponse {
+  data?: {
+    document?: { document_id?: string };
+    document_id?: string;
+  };
+}
+
+interface LarkDocxBlockChild {
+  block_id?: string;
+}
+
+interface LarkDocxDocumentBlockChildrenCreateResponse {
+  data?: {
+    children?: LarkDocxBlockChild[];
+  };
+}
+
+interface LarkDocxImageCreateResponse {
+  data?: {
+    image?: { token?: string };
+    token?: string;
+  };
+}
+
+interface LarkDocxClient {
+  docx: {
+    v1: {
+      document: {
+        create(params: {
+          data: { title: string };
+        }): Promise<LarkDocxDocumentCreateResponse>;
+      };
+      documentBlockChildren: {
+        create(params: {
+          path: { document_id: string; block_id: string };
+          data: {
+            children: BlockChildren[];
+            index?: number;
+          };
+        }): Promise<LarkDocxDocumentBlockChildrenCreateResponse>;
+      };
+      documentBlock: {
+        update(params: {
+          path: { document_id: string; block_id: string };
+          data: {
+            update_text_elements?: unknown;
+          };
+        }): Promise<unknown>;
+      };
+      image: {
+        create(params: {
+          path: { document_id: string };
+          data: {
+            file_name: string;
+            image_type: string;
+          };
+        }): Promise<LarkDocxImageCreateResponse>;
+      };
+    };
+  };
+}
+
+function extractCreatedBlockIds(
+  response: LarkDocxDocumentBlockChildrenCreateResponse,
+): string[] {
+  const children = response.data?.children ?? [];
+  return children
+    .map((child) => child.block_id)
+    .filter((id): id is string => typeof id === 'string');
+}
+
 @Injectable()
 export class LarkDocService {
   private readonly logger = new Logger(LarkDocService.name);
@@ -28,19 +100,26 @@ export class LarkDocService {
     this.client = client;
   }
 
-  async createDocument(
-    title: string,
-  ): Promise<{ documentId: string; url: string }> {
+  private requireClient(): Lark.Client {
     if (!this.client) {
       throw new Error('飞书客户端未初始化');
     }
+    return this.client;
+  }
 
-    const response = await (this.client as any).docx.v1.document.create({
+  private getDocx(): LarkDocxClient['docx'] {
+    return (this.requireClient() as unknown as LarkDocxClient).docx;
+  }
+
+  async createDocument(
+    title: string,
+  ): Promise<{ documentId: string; url: string }> {
+    const response = await this.getDocx().v1.document.create({
       data: { title },
     });
 
     const documentId =
-      response?.data?.document?.document_id || response?.data?.document_id;
+      response.data?.document?.document_id ?? response.data?.document_id;
 
     if (!documentId) {
       throw new Error('未从飞书文档接口返回 document_id');
@@ -59,24 +138,37 @@ export class LarkDocService {
     block: BlockChildren,
     index?: number,
   ): Promise<BlockCreationResult> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
+    const blocks = this.docWriter.normalizeBlocksForCreate([block]);
+    if (blocks.length > 1) {
+      const result = await this.addBlocksToDocumentWithIndex(
+        documentId,
+        blocks,
+        index,
+      );
+      const blockId = result.blockIds[0];
+      if (!blockId) {
+        throw new Error('块创建失败，未返回 block_id');
+      }
+
+      return {
+        blockId,
+        parentBlockId: documentId,
+        index: index ?? 0,
+      };
     }
 
-    const response = await (
-      this.client as any
-    ).docx.v1.documentBlockChildren.create({
+    const response = await this.getDocx().v1.documentBlockChildren.create({
       path: {
         document_id: documentId,
         block_id: documentId,
       },
       data: {
-        children: [block],
+        children: blocks,
         index: index ?? 0,
       },
     });
 
-    const blockId = response?.data?.children?.[0]?.block_id;
+    const blockId = response.data?.children?.[0]?.block_id;
     if (!blockId) {
       throw new Error('块创建失败，未返回 block_id');
     }
@@ -94,19 +186,14 @@ export class LarkDocService {
     documentId: string,
     blocks: BlockChildren[],
   ): Promise<BatchBlockCreationResult> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
-
+    const normalizedBlocks = this.docWriter.normalizeBlocksForCreate(blocks);
     const MAX_BLOCKS_PER_REQUEST = 50;
     const allBlockIds: string[] = [];
 
-    for (let i = 0; i < blocks.length; i += MAX_BLOCKS_PER_REQUEST) {
-      const batch = blocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
+    for (let i = 0; i < normalizedBlocks.length; i += MAX_BLOCKS_PER_REQUEST) {
+      const batch = normalizedBlocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
 
-      const response = await (
-        this.client as any
-      ).docx.v1.documentBlockChildren.create({
+      const response = await this.getDocx().v1.documentBlockChildren.create({
         path: {
           document_id: documentId,
           block_id: documentId,
@@ -116,8 +203,7 @@ export class LarkDocService {
         },
       });
 
-      const blockIds =
-        response?.data?.children?.map((child: any) => child.block_id) || [];
+      const blockIds = extractCreatedBlockIds(response);
       allBlockIds.push(...blockIds);
     }
 
@@ -134,10 +220,6 @@ export class LarkDocService {
     parentBlockId: string,
     blocks: BatchCreateBlock[],
   ): Promise<BatchBlockCreationResult> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
-
     const children = blocks.map((block) => this.convertToBlockChildren(block));
     const MAX_BLOCKS_PER_REQUEST = 50;
     const allBlockIds: string[] = [];
@@ -145,9 +227,7 @@ export class LarkDocService {
     for (let i = 0; i < children.length; i += MAX_BLOCKS_PER_REQUEST) {
       const batch = children.slice(i, i + MAX_BLOCKS_PER_REQUEST);
 
-      const response = await (
-        this.client as any
-      ).docx.v1.documentBlockChildren.create({
+      const response = await this.getDocx().v1.documentBlockChildren.create({
         path: {
           document_id: documentId,
           block_id: parentBlockId,
@@ -157,8 +237,7 @@ export class LarkDocService {
         },
       });
 
-      const blockIds =
-        response?.data?.children?.map((child: any) => child.block_id) || [];
+      const blockIds = extractCreatedBlockIds(response);
       allBlockIds.push(...blockIds);
     }
 
@@ -175,11 +254,7 @@ export class LarkDocService {
     imageBuffer: Buffer,
     imageName: string = 'image.png',
   ): Promise<ImageUploadResult> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
-
-    const response = await (this.client as any).docx.v1.image.create({
+    const response = await this.getDocx().v1.image.create({
       path: {
         document_id: documentId,
       },
@@ -189,12 +264,13 @@ export class LarkDocService {
       },
     });
 
-    const imageKey = response?.data?.image?.token || response?.data?.token;
+    const imageKey =
+      response.data?.image?.token ?? response.data?.token ?? undefined;
     if (!imageKey) {
       throw new Error('图片上传失败，未返回 image token');
     }
 
-    await this.client.request({
+    await this.requireClient().request({
       method: 'POST',
       url: `https://open.feishu.cn/open-apis/drive/v1/medias/upload_all`,
       data: {
@@ -224,12 +300,10 @@ export class LarkDocService {
       update: Partial<BlockChildren>;
     }>,
   ): Promise<void> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
+    const docx = this.getDocx();
 
     for (const { blockId, update } of updates) {
-      await (this.client as any).docx.v1.documentBlock.update({
+      await docx.v1.documentBlock.update({
         path: {
           document_id: documentId,
           block_id: blockId,
@@ -278,7 +352,7 @@ export class LarkDocService {
     index?: number,
   ): Promise<BatchBlockCreationResult> {
     const blocks = items.map((item) => this.docWriter.createBulletBlock(item));
-    return this.addBlocksToDocument(documentId, blocks);
+    return this.addBlocksToDocumentWithIndex(documentId, blocks, index);
   }
 
   async appendOrderedListToDocument(
@@ -287,7 +361,7 @@ export class LarkDocService {
     index?: number,
   ): Promise<BatchBlockCreationResult> {
     const blocks = items.map((item) => this.docWriter.createOrderedBlock(item));
-    return this.addBlocksToDocument(documentId, blocks);
+    return this.addBlocksToDocumentWithIndex(documentId, blocks, index);
   }
 
   async appendMarkdownToDocument(
@@ -304,34 +378,26 @@ export class LarkDocService {
     blocks: BlockChildren[],
     startIndex?: number,
   ): Promise<BatchBlockCreationResult> {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
-
+    const normalizedBlocks = this.docWriter.normalizeBlocksForCreate(blocks);
     const MAX_BLOCKS_PER_REQUEST = 50;
     const allBlockIds: string[] = [];
     let currentIndex = startIndex ?? 0;
 
-    for (let i = 0; i < blocks.length; i += MAX_BLOCKS_PER_REQUEST) {
-      const batch = blocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
+    for (let i = 0; i < normalizedBlocks.length; i += MAX_BLOCKS_PER_REQUEST) {
+      const batch = normalizedBlocks.slice(i, i + MAX_BLOCKS_PER_REQUEST);
 
-      const response = await (
-        this.client as any
-      ).docx.v1.documentBlockChildren.create({
+      const response = await this.getDocx().v1.documentBlockChildren.create({
         path: {
           document_id: documentId,
           block_id: documentId,
         },
-        params: {
-          index: currentIndex,
-        },
         data: {
+          index: currentIndex,
           children: batch,
         },
       });
 
-      const blockIds =
-        response?.data?.children?.map((child: any) => child.block_id) || [];
+      const blockIds = extractCreatedBlockIds(response);
       allBlockIds.push(...blockIds);
       currentIndex += blockIds.length;
     }

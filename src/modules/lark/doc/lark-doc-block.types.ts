@@ -23,7 +23,7 @@ export interface TextElement {
       italic?: boolean;
       strikethrough?: boolean;
       underline?: boolean;
-      code?: boolean;
+      inline_code?: boolean;
       link?: {
         url: string;
       };
@@ -111,7 +111,6 @@ export interface BlockChildren {
   };
   divider?: Record<string, never>;
   table?: {
-    cells: string[][];
     property?: {
       row_size?: number;
       column_size?: number;
@@ -124,7 +123,7 @@ export interface BlockChildren {
     };
   };
   image?: {
-    tokens?: string[];
+    token?: string;
   };
 }
 
@@ -179,12 +178,12 @@ export const BLOCK_TYPE_MAP: Record<BlockType, number> = {
   HEADING6: 8,
   BULLET: 12,
   ORDERED: 13,
-  TODO: 14,
-  CODE: 17,
-  QUOTE: 18,
+  CODE: 14,
+  QUOTE: 15,
+  TODO: 17,
   DIVIDER: 22,
   IMAGE: 27,
-  TABLE: 30,
+  TABLE: 31,
 };
 
 export interface BlockCreationResult {

@@ -14,6 +14,8 @@ import { InstructionDetectorService } from '../../common/instruction-detector.se
 export class LarkSlidesService {
   private readonly logger = new Logger(LarkSlidesService.name);
   private client: Lark.Client | null = null;
+  private static readonly MAX_TEXT_BLOCK_CONTENT_LENGTH = 20_000;
+  private static readonly MAX_BLOCKS_PER_REQUEST = 50;
 
   constructor(
     private readonly configService: ConfigService,
@@ -65,17 +67,32 @@ export class LarkSlidesService {
       throw new Error('飞书客户端未初始化');
     }
 
+    const blocks = this.normalizeSlideBlocksForCreate([block]);
+    if (blocks.length > 1) {
+      const blockIds = await this.batchAddSlideBlocks(
+        presentationId,
+        pageId,
+        blocks,
+      );
+      const blockId = blockIds[0];
+      if (!blockId) {
+        throw new Error('幻灯片块创建失败，未返回 block_id');
+      }
+
+      return blockId;
+    }
+
     const response = await (this.client as any).slides.v1.slideBlock.create({
       path: {
         presentation_id: presentationId,
         slide_id: pageId,
       },
       data: {
-        block_type: block.block_type,
-        block_id: block.block_id,
-        text: block.text,
-        image: block.image,
-        shape: block.shape,
+        block_type: blocks[0].block_type,
+        block_id: blocks[0].block_id,
+        text: blocks[0].text,
+        image: blocks[0].image,
+        shape: blocks[0].shape,
       },
     });
 
@@ -97,25 +114,41 @@ export class LarkSlidesService {
       throw new Error('飞书客户端未初始化');
     }
 
-    const response = await (
-      this.client as any
-    ).slides.v1.slideBlock.batch_create({
-      path: {
-        presentation_id: presentationId,
-        slide_id: pageId,
-      },
-      data: {
-        slides: blocks.map((block) => ({
-          block_type: block.block_type,
-          block_id: block.block_id,
-          text: block.text,
-          image: block.image,
-          shape: block.shape,
-        })),
-      },
-    });
+    const normalizedBlocks = this.normalizeSlideBlocksForCreate(blocks);
+    const blockIds: string[] = [];
 
-    const blockIds = response?.data?.blocks?.map((b: any) => b.block_id) || [];
+    for (
+      let i = 0;
+      i < normalizedBlocks.length;
+      i += LarkSlidesService.MAX_BLOCKS_PER_REQUEST
+    ) {
+      const batch = normalizedBlocks.slice(
+        i,
+        i + LarkSlidesService.MAX_BLOCKS_PER_REQUEST,
+      );
+
+      const response = await (
+        this.client as any
+      ).slides.v1.slideBlock.batch_create({
+        path: {
+          presentation_id: presentationId,
+          slide_id: pageId,
+        },
+        data: {
+          slides: batch.map((block) => ({
+            block_type: block.block_type,
+            block_id: block.block_id,
+            text: block.text,
+            image: block.image,
+            shape: block.shape,
+          })),
+        },
+      });
+
+      blockIds.push(
+        ...(response?.data?.blocks?.map((b: any) => b.block_id) || []),
+      );
+    }
     this.logger.log(`✅ 批量添加 ${blockIds.length} 个幻灯片块`);
 
     return blockIds;
@@ -234,6 +267,120 @@ export class LarkSlidesService {
     });
   }
 
+  normalizeSlideBlocksForCreate(blocks: CreateSlideBlock[]): CreateSlideBlock[] {
+    return blocks.flatMap((block) => this.splitSlideBlockByTextLimit(block));
+  }
+
+  private splitSlideBlockByTextLimit(block: CreateSlideBlock): CreateSlideBlock[] {
+    const elements = block.text?.elements;
+    if (!elements?.length) {
+      return [block];
+    }
+
+    const elementGroups = this.splitSlideTextElements(elements);
+    if (elementGroups.length <= 1) {
+      return [block];
+    }
+
+    return elementGroups.map((group) => ({
+      ...block,
+      text: {
+        ...block.text,
+        elements: group,
+      },
+    }));
+  }
+
+  private splitSlideTextElements(
+    elements: SlideBlockElement[],
+  ): SlideBlockElement[][] {
+    const groups: SlideBlockElement[][] = [];
+    let currentGroup: SlideBlockElement[] = [];
+    let currentLength = 0;
+
+    const pushElement = (element: SlideBlockElement) => {
+      const contentLength = element.text_run?.content.length ?? 0;
+      if (
+        currentGroup.length > 0 &&
+        currentLength + contentLength >
+          LarkSlidesService.MAX_TEXT_BLOCK_CONTENT_LENGTH
+      ) {
+        groups.push(currentGroup);
+        currentGroup = [];
+        currentLength = 0;
+      }
+
+      currentGroup.push(element);
+      currentLength += contentLength;
+    };
+
+    for (const element of elements) {
+      if (!element.text_run) {
+        pushElement(element);
+        continue;
+      }
+
+      for (const chunk of this.splitTextContent(element.text_run.content)) {
+        pushElement(this.cloneSlideElementWithContent(element, chunk));
+      }
+    }
+
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    return groups;
+  }
+
+  private splitTextContent(content: string): string[] {
+    if (content.length === 0) {
+      return [''];
+    }
+
+    const chunks: string[] = [];
+    let start = 0;
+
+    while (start < content.length) {
+      let end = Math.min(
+        start + LarkSlidesService.MAX_TEXT_BLOCK_CONTENT_LENGTH,
+        content.length,
+      );
+
+      if (
+        end < content.length &&
+        this.isHighSurrogate(content.charCodeAt(end - 1))
+      ) {
+        end -= 1;
+      }
+
+      chunks.push(content.slice(start, end));
+      start = end;
+    }
+
+    return chunks;
+  }
+
+  private isHighSurrogate(charCode: number): boolean {
+    return charCode >= 0xd800 && charCode <= 0xdbff;
+  }
+
+  private cloneSlideElementWithContent(
+    element: SlideBlockElement,
+    content: string,
+  ): SlideBlockElement {
+    return {
+      text_run: {
+        content,
+        style: element.text_run?.style
+          ? { ...element.text_run.style }
+          : undefined,
+        link: element.text_run?.link
+          ? { ...element.text_run.link }
+          : undefined,
+      },
+    };
+  }
+
   parseMarkdownToSlideBlocks(markdown: string): CreateSlideBlock[] {
     const lines = markdown.split('\n');
     const blocks: CreateSlideBlock[] = [];
@@ -248,12 +395,12 @@ export class LarkSlidesService {
         blocks.push(this.createHeadingSlideBlock(2, trimmed.slice(3)));
       } else if (trimmed.startsWith('# ')) {
         blocks.push(this.createHeadingSlideBlock(1, trimmed.slice(2)));
-      } else if (trimmed.startsWith('- ')) {
-        blocks.push(this.createTextSlideBlock(`• ${trimmed.slice(2)}`));
       } else if (trimmed.startsWith('- [ ] ')) {
         blocks.push(this.createTextSlideBlock(`☐ ${trimmed.slice(6)}`));
       } else if (trimmed.startsWith('- [x] ')) {
         blocks.push(this.createTextSlideBlock(`☑ ${trimmed.slice(6)}`));
+      } else if (trimmed.startsWith('- ')) {
+        blocks.push(this.createTextSlideBlock(`• ${trimmed.slice(2)}`));
       } else if (/^\d+\.\s/.test(trimmed)) {
         blocks.push(this.createTextSlideBlock(trimmed));
       } else {
@@ -261,7 +408,7 @@ export class LarkSlidesService {
       }
     }
 
-    return blocks;
+    return this.normalizeSlideBlocksForCreate(blocks);
   }
 
   async appendTextToSlide(

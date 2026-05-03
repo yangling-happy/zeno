@@ -23,19 +23,42 @@ export class AgentToolService {
     'chitchat.skill': 'CHITCHAT',
   };
 
+  private normalizeTopicCandidate(topic: string): string | undefined {
+    const normalized = topic
+      .trim()
+      .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '')
+      .replace(/^(?:是|为|叫|：|:)\s*/, '')
+      .replace(/(?:的)?(?:文章|文档|内容|材料|报告|PPT|演示|幻灯片)$/i, '')
+      .trim();
+
+    if (
+      !normalized ||
+      /^(?:写?入)?(?:一篇|一份|一个)?(?:文章|文档|内容|材料|报告)$/i.test(
+        normalized,
+      )
+    ) {
+      return undefined;
+    }
+
+    return normalized;
+  }
+
   private extractTopicFromText(text: string): string | undefined {
     const patterns = [
-      /写(?:关于|)([^\s，,。!！?？]+(?:的?[^\s，,。!！?？]+)?)/,
-      /创建.*文档.*写([^，,。!！?？]+)/,
-      /生成.*文档.*写([^，,。!！?？]+)/,
-      /文档.*写([^，,。!！?？]+)/,
+      /(?:主题|题目)\s*(?:是|为|叫|：|:)\s*([^，,。!！?？]+)/i,
+      /以\s*([^，,。!！?？]+?)\s*为主题/i,
+      /(?:关于|围绕|有关)\s*([^，,。!！?？]+)/i,
+      /写(?!入)(?:关于|)\s*([^\s，,。!！?？]+(?:的?[^\s，,。!！?？]+)?)/,
+      /创建.*文档.*写(?!入)([^，,。!！?？]+)/,
+      /生成.*文档.*写(?!入)([^，,。!！?？]+)/,
+      /文档.*写(?!入)([^，,。!！?？]+)/,
     ];
 
     for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match && match[1]) {
-        const topic = match[1].trim();
-        if (topic.length >= 2 && topic.length <= 50) {
+        const topic = this.normalizeTopicCandidate(match[1]);
+        if (topic && topic.length >= 2 && topic.length <= 50) {
           return topic;
         }
       }
