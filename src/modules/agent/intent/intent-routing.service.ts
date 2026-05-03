@@ -245,7 +245,7 @@ ${buildSkillPromptContext()}
 
     try {
       const response = await this.aiService.chat(prompt);
-      const parsed = JSON.parse(response);
+      const parsed: unknown = JSON.parse(response);
       const result = IntentSchema.parse(parsed);
 
       return {

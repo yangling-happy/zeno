@@ -51,6 +51,8 @@ services:
       - zeno-network
 
   app:
+    # Dockerfile 基础镜像使用 public.ecr.aws（绕过 docker.io 镜像加速 EOF）。
+    # 若仍失败：检查代理，或在 Docker Engine 中清空 registry-mirrors 后直连 Hub。
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -67,6 +69,13 @@ services:
     volumes:
       - ./src:/app/src
       - ./prisma:/app/prisma
+      # 与宿主依赖声明保持一致；否则仅重建镜像前改的 package.json 不会进入容器
+      - ./package.json:/app/package.json
+      - ./pnpm-lock.yaml:/app/pnpm-lock.yaml
+    command:
+      - sh
+      - -c
+      - HUSKY=0 pnpm install && pnpm start:dev
     depends_on:
       redis:
         condition: service_healthy

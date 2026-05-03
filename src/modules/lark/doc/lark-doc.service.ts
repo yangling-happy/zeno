@@ -41,7 +41,7 @@ interface LarkDocxClient {
     v1: {
       document: {
         create(params: {
-          data: { title: string };
+          data: { title: string; folder_token?: string };
         }): Promise<LarkDocxDocumentCreateResponse>;
       };
       documentBlockChildren: {
@@ -83,6 +83,12 @@ function extractCreatedBlockIds(
     .filter((id): id is string => typeof id === 'string');
 }
 
+function readOptionalConfigFolderToken(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
 @Injectable()
 export class LarkDocService {
   private readonly logger = new Logger(LarkDocService.name);
@@ -111,11 +117,27 @@ export class LarkDocService {
     return (this.requireClient() as unknown as LarkDocxClient).docx;
   }
 
+  /**
+   * @param folderToken 可选；未传时使用环境变量 `LARK_CLOUD_FOLDER_TOKEN`。
+   * tenant_access_token 场景建议传入应用创建的文件夹，与幻灯片写入路径一致。
+   */
   async createDocument(
     title: string,
+    folderToken?: string,
   ): Promise<{ documentId: string; url: string }> {
+    const folder_token =
+      readOptionalConfigFolderToken(folderToken) ??
+      readOptionalConfigFolderToken(
+        this.configService.get<string>('LARK_CLOUD_FOLDER_TOKEN'),
+      );
+
+    const data: { title: string; folder_token?: string } = { title };
+    if (folder_token) {
+      data.folder_token = folder_token;
+    }
+
     const response = await this.getDocx().v1.document.create({
-      data: { title },
+      data,
     });
 
     const documentId =

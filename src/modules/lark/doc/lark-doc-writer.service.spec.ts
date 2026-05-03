@@ -66,10 +66,8 @@ describe('LarkDocWriterService', () => {
     ]);
 
     expect(blocks).toHaveLength(3);
-    expect(blocks.map((block) => block.text?.elements[0].text_run.content.length)).toEqual([
-      95_000,
-      95_000,
-      1,
-    ]);
+    expect(
+      blocks.map((block) => block.text?.elements[0].text_run.content.length),
+    ).toEqual([95_000, 95_000, 1]);
   });
 });

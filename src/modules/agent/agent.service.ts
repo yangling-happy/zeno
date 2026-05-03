@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
+import { SpanStatusCode, trace as otelTrace } from '@opentelemetry/api';
 import { AiService } from '../ai/ai.service';
 import { AgentToolService } from './agent-tool.service';
 import { IntentRoutingService } from './intent/intent-routing.service';
@@ -14,7 +15,10 @@ import {
   SkillExecutionPlan,
   SkillMatch,
 } from './agent.types';
-import { IntentSchema, IntentClassification } from './zod/agent-zod.schema';
+import {
+  IntentSchema,
+  type IntentClassification,
+} from './zod/agent-zod.schema';
 import {
   buildSkillPromptContext,
   getSkillByIntent,
@@ -26,18 +30,15 @@ import {
   updateStateWithTrace,
 } from '../common/agent.utils';
 
-// 条件导入 OpenTelemetry
-let trace: any;
-try {
-  trace = require('@opentelemetry/api').trace;
-} catch (error) {
-  // OpenTelemetry 不可用时，使用空实现
-  trace = {
-    getTracer: () => ({
-      startActiveSpan: (name: string, fn: any) =>
-        fn({ setAttribute: () => {}, setStatus: () => {}, end: () => {} }),
-    }),
-  };
+function formatPlannerGoalSummary(
+  params: IntentClassification['parameters'] | undefined,
+): string {
+  const goal = params?.goal;
+  if (goal === undefined || goal === null) return '新任务';
+  if (typeof goal === 'string') return goal;
+  if (typeof goal === 'number' || typeof goal === 'boolean')
+    return String(goal);
+  return JSON.stringify(goal);
 }
 
 const AgentGraphState = Annotation.Root({
@@ -65,10 +66,14 @@ const AgentGraphState = Annotation.Root({
 
 type GraphState = typeof AgentGraphState.State;
 
+type CompiledAgentGraph = {
+  invoke(state: GraphState): Promise<GraphState>;
+};
+
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
-  private compiledGraph: any = null;
+  private compiledGraph: CompiledAgentGraph | null = null;
 
   private readonly personas: Record<string, PersonaProfile> = {
     zeno: {
@@ -89,7 +94,7 @@ export class AgentService {
     private readonly cacheService: CacheService,
   ) {}
 
-  private readonly tracer = trace.getTracer('agent-service');
+  private readonly tracer = otelTrace.getTracer('agent-service');
   private readonly cacheExpiry = 5 * 60 * 1000; // 5分钟缓存过期
   private readonly rateLimitWindow = 1000; // 1秒窗口
   private readonly rateLimitMax = 5; // 每窗口最大请求数
@@ -129,7 +134,7 @@ export class AgentService {
     this.activeRequests.add(requestId);
 
     try {
-      return this.tracer.startActiveSpan('agent.run', async (span) => {
+      return await this.tracer.startActiveSpan('agent.run', async (span) => {
         try {
           // 添加属性到 span
           span.setAttribute('user.id', userId);
@@ -186,7 +191,10 @@ export class AgentService {
             trace: result.trace,
           };
         } catch (error) {
-          span.setStatus({ code: 2, message: (error as Error).message });
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: (error as Error).message,
+          });
           throw error;
         } finally {
           span.end();
@@ -246,21 +254,21 @@ export class AgentService {
         );
       })
       // 场景 B: 任务规划节点
-      .addNode('planner_node', async (state) => {
+      .addNode('planner_node', (state) => {
         const response = buildResponse(
-          `[场景B: 任务规划] 我已理解您的意图：${state.params?.goal || '新任务'}。正在为您拆解步骤...`,
+          `[场景B: 任务规划] 我已理解您的意图：${formatPlannerGoalSummary(state.params)}。正在为您拆解步骤...`,
         );
         return updateStateWithTrace(state, response, 'planner_node');
       })
       // 场景 E: 多端同步节点
-      .addNode('sync_node', async (state) => {
+      .addNode('sync_node', (state) => {
         const response = buildResponse(
           `[场景E: 多端同步] 正在将数据从 ${state.userInput.channel || '未知设备'} 同步至另一端...`,
         );
         return updateStateWithTrace(state, response, 'sync_node');
       })
       // 场景 C: 文档节点
-      .addNode('doc_node', async (state) => {
+      .addNode('doc_node', (state) => {
         const actionInstruction =
           this.agentToolService.buildActionInstructionFromSkillPlan(
             state.skillExecutionPlan,
@@ -273,7 +281,7 @@ export class AgentService {
         return updateStateWithTrace(state, response, 'doc_node');
       })
       // 场景 D: 演示/画布节点
-      .addNode('present_node', async (state) => {
+      .addNode('present_node', (state) => {
         const actionInstruction =
           this.agentToolService.buildActionInstructionFromSkillPlan(
             state.skillExecutionPlan,
@@ -285,7 +293,7 @@ export class AgentService {
         );
         return updateStateWithTrace(state, response, 'present_node');
       })
-      .addNode('clarify_node', async (state) => {
+      .addNode('clarify_node', (state) => {
         const response = buildResponse(
           '我理解到你可能在发起协作任务。请补充：要创建文档、演示文稿，还是要向已有自由画布追加内容？',
         );

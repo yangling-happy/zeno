@@ -9,7 +9,7 @@ interface CacheItem<T> {
 @Injectable()
 export class CacheService {
   private readonly logger = new Logger(CacheService.name);
-  private readonly cache = new Map<string, CacheItem<any>>();
+  private readonly cache = new Map<string, CacheItem<unknown>>();
   private readonly defaultExpiry = 5 * 60 * 1000; // 默认5分钟过期
 
   /**
@@ -44,7 +44,7 @@ export class CacheService {
       return null;
     }
 
-    return item.value;
+    return item.value as T;
   }
 
   /**

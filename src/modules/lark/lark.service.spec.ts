@@ -3,6 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import { AgentService } from '../agent/agent.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
 import { LarkService } from './lark.service';
+import { MemoryService } from '../memory/memory.service';
+
+const memoryServiceMock = {
+  addConversationTurn: jest.fn().mockResolvedValue(1),
+  shouldTriggerSummarization: jest.fn().mockResolvedValue(false),
+  getRecentConversations: jest.fn().mockResolvedValue([]),
+  extractAndStoreFacts: jest.fn().mockResolvedValue([]),
+  buildContextBackground: jest.fn().mockResolvedValue({
+    recentConversations: [],
+    retrievedFacts: [],
+    conversationTurnCount: 0,
+  }),
+};
 
 let registeredHandlers: Record<
   string,
@@ -94,6 +107,10 @@ describe('LarkService', () => {
             processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
+        },
       ],
     }).compile();
 
@@ -139,6 +156,10 @@ describe('LarkService', () => {
             processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
+        },
       ],
     }).compile();
 
@@ -153,11 +174,18 @@ describe('LarkService', () => {
     });
     await flushPromises();
 
-    expect(agentRunMock).toHaveBeenCalledWith({
-      text: '你好',
-      userId: undefined,
-      channel: 'lark',
-    });
+    expect(agentRunMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '你好',
+        userId: 'anonymous',
+        channel: 'lark',
+        memoryContext: {
+          recentConversations: [],
+          retrievedFacts: [],
+          conversationTurnCount: 0,
+        },
+      }),
+    );
     expect(replyMock).toHaveBeenCalledWith({
       path: {
         message_id: 'om_test_msg_id',
@@ -217,6 +245,10 @@ describe('LarkService', () => {
             processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
+        },
       ],
     }).compile();
 
@@ -264,6 +296,10 @@ describe('LarkService', () => {
             processInstruction: jest.fn().mockResolvedValue(''),
           },
         },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
+        },
       ],
     }).compile();
 
@@ -299,6 +335,10 @@ describe('LarkService', () => {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
           },
+        },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
         },
       ],
     }).compile();
@@ -354,6 +394,10 @@ describe('LarkService', () => {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
           },
+        },
+        {
+          provide: MemoryService,
+          useValue: memoryServiceMock,
         },
       ],
     }).compile();

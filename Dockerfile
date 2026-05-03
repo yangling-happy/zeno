@@ -1,6 +1,9 @@
-FROM node:20-alpine AS builder
+# 同上：避免 docker.io 经失效镜像加速时报 EOF
+FROM public.ecr.aws/docker/library/node:20-alpine AS builder
 
 WORKDIR /app
+
+ENV HUSKY=0
 
 COPY package.json pnpm-lock.yaml ./
 
@@ -13,7 +16,7 @@ COPY . .
 
 RUN npx prisma generate && pnpm run build
 
-FROM node:20-alpine AS runner
+FROM public.ecr.aws/docker/library/node:20-alpine AS runner
 
 WORKDIR /app
 

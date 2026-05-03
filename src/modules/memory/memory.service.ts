@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { OllamaEmbeddings } from '@langchain/ollama';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 
@@ -36,7 +37,9 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MemoryService.name);
   private redisClient: Redis | null = null;
   private prisma: PrismaClient | null = null;
-  private vectorStore: any = null;
+  private vectorStore: {
+    embeddings: { embedQuery(text: string): Promise<number[]> };
+  } | null = null;
   private readonly redisKeyPrefix = 'zeno:memory:';
   private readonly maxRecentTurns = 10;
 
@@ -51,12 +54,12 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async initializeConnections() {
-    await this.initRedis();
+    this.initRedis();
     await this.initPrisma();
-    await this.initVectorStore();
+    this.initVectorStore();
   }
 
-  private async initRedis() {
+  private initRedis() {
     try {
       const redisUrl = this.configService.get<string>('REDIS_URL');
       if (!redisUrl) {
@@ -83,13 +86,12 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async initVectorStore() {
+  private initVectorStore() {
     if (!this.prisma) {
       this.logger.warn('⚠️ Prisma 未连接，向量存储功能将不可用');
       return;
     }
     try {
-      const { OllamaEmbeddings } = require('@langchain/ollama');
       this.vectorStore = {
         embeddings: new OllamaEmbeddings({
           model: 'nomic-embed-text',
@@ -152,7 +154,9 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
       0,
       this.maxRecentTurns - 1,
     );
-    return turns.map((turn: string) => JSON.parse(turn)).reverse();
+    return turns
+      .map((turn: string) => JSON.parse(turn) as ConversationTurn)
+      .reverse();
   }
 
   async getConversationTurnCount(userId: string): Promise<number> {
@@ -197,6 +201,10 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
     conversations: ConversationTurn[],
   ): Promise<FactSnippet[]> {
     const facts: FactSnippet[] = [];
+    const vectorStore = this.vectorStore;
+    if (!vectorStore) {
+      return facts;
+    }
     const preferenceKeywords = [
       '喜欢',
       '偏好',
@@ -246,8 +254,7 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
 
       if (category !== 'general') {
         try {
-          const embedding =
-            await this.vectorStore.embeddings.embedQuery(content);
+          const embedding = await vectorStore.embeddings.embedQuery(content);
           facts.push({
             id: `${userId}_${Date.now()}_${i}`,
             userId,
@@ -302,7 +309,7 @@ export class MemoryService implements OnModuleInit, OnModuleDestroy {
       userId: fact.userId,
       content: fact.content,
       category: fact.category as FactSnippet['category'],
-      embedding: JSON.parse(fact.embedding),
+      embedding: JSON.parse(fact.embedding) as number[],
       createdAt: fact.createdAt.getTime(),
       sourceConversationTurn: fact.sourceConversationTurn ?? undefined,
     }));

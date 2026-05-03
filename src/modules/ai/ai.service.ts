@@ -30,7 +30,7 @@ export class AiService {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        return await this.fetchWithTimeout(text, attempt + 1);
+        return await this.fetchWithTimeout(text);
       } catch (error) {
         lastError = error as Error;
         this.logger.warn(
@@ -50,10 +50,7 @@ export class AiService {
     return this.getFallbackResponse(text);
   }
 
-  private async fetchWithTimeout(
-    text: string,
-    attempt: number,
-  ): Promise<string> {
+  private async fetchWithTimeout(text: string): Promise<string> {
     const apiKey = this.configService.get<string>('ARK_API_KEY') || '';
     const model =
       this.configService.get<string>('ARK_MODEL') ||

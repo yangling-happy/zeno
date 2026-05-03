@@ -3,8 +3,7 @@ import { AppModule } from './app.module';
 import { startOtel, shutdownOtel } from './opentelemetry';
 
 async function bootstrap() {
-  // 启动 OpenTelemetry
-  await startOtel();
+  startOtel();
 
   const app = await NestFactory.create(AppModule);
 

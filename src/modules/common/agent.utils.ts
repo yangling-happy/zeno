@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import type { ActionInstruction } from '../agent/agent.types';
 
 const ACTION_PHRASES = [
   '写入',
@@ -158,10 +159,10 @@ export function checkRateLimit(
  */
 export function buildResponse(
   response: string,
-  actionInstruction?: any,
+  actionInstruction?: ActionInstruction,
 ): {
   response: string;
-  actionInstruction?: any;
+  actionInstruction?: ActionInstruction;
 } {
   return {
     response,
@@ -176,15 +177,16 @@ export function buildResponse(
  * @param trace 追踪信息
  * @returns 更新后的状态
  */
-export function updateStateWithTrace<T>(
+export function updateStateWithTrace<T extends { trace?: string[] }>(
   state: T,
-  updates: Partial<T>,
-  trace: string,
+  updates: Partial<Omit<T, 'trace'>>,
+  traceStep: string,
 ): T & { trace: string[] } {
+  const prevTrace = state.trace ?? [];
   return {
     ...state,
     ...updates,
-    trace: [...(state as any).trace, trace],
+    trace: [...prevTrace, traceStep],
   };
 }
 

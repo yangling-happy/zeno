@@ -65,6 +65,14 @@ interface StoppableWsClient {
   stop?: () => void | Promise<void>;
 }
 
+/** 与 {@link LarkSlidesService} 对齐，避免类型解析服务在跨文件分析时出现 no-unsafe-* 误报 */
+interface LarkSlidesWriter {
+  appendMarkdownToFirstSlide(
+    presentationId: string,
+    markdown: string,
+  ): Promise<string[] | null>;
+}
+
 @Injectable()
 export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LarkService.name);
@@ -466,6 +474,25 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
               doc.documentId,
               contentToWrite,
             );
+
+            try {
+              const slidesWriter: LarkSlidesWriter = this.slidesService;
+              const slideBlockIds =
+                await slidesWriter.appendMarkdownToFirstSlide(
+                  present.presentationId,
+                  contentToWrite,
+                );
+              if (slideBlockIds !== null) {
+                this.logger.log(
+                  `✅ 已向演示文稿写入 ${slideBlockIds.length} 个幻灯片内容块`,
+                );
+              }
+            } catch (err) {
+              this.logger.error(
+                `向演示文稿同步内容失败: ${(err as Error).message}`,
+                err as Error,
+              );
+            }
           }
 
           return [
