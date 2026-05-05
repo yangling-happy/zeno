@@ -34,4 +34,32 @@ describe('AgentToolService', () => {
       expect(action.params.summary).toBeUndefined();
     }
   });
+
+  it('should prefer creating a doc with embedded board when user asks to create a board', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_PRESENT',
+      {},
+      '帮我创建一个画板，主题是迭代规划',
+      0.9,
+    );
+
+    expect(action.type).toBe('LARK_BOARD_CREATE');
+    if (action.type === 'LARK_BOARD_CREATE') {
+      expect(action.params.summary).toBe('迭代规划');
+    }
+  });
+
+  it('should append markdown to an existing whiteboard when whiteboardId is provided', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_PRESENT',
+      { whiteboardId: 'wb_demo_token', summary: '# 标题\n正文' },
+      '把这段写入画布',
+      0.9,
+    );
+
+    expect(action.type).toBe('LARK_WHITEBOARD_APPEND');
+    if (action.type === 'LARK_WHITEBOARD_APPEND') {
+      expect(action.params.whiteboardId).toBe('wb_demo_token');
+    }
+  });
 });

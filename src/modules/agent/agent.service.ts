@@ -275,7 +275,7 @@ export class AgentService {
             state.normalizedText,
           );
         const response = buildResponse(
-          '已识别为文档协作请求，我会创建文档并在会话中回传链接，随后可继续生成演示文稿或写入画布。',
+          '已识别为文档协作请求，我会创建文档并在会话中回传链接。',
           actionInstruction,
         );
         return updateStateWithTrace(state, response, 'doc_node');
@@ -288,14 +288,14 @@ export class AgentService {
             state.normalizedText,
           );
         const response = buildResponse(
-          '已识别为演示/画布请求，我会串联创建文档与演示材料，并按参数写入自由画布。',
+          '已识别为演示/画布请求：创建画板时会生成「正文文档」与「画板」两条独立链接；正文只写入文档，画板为空白画布可手绘，避免两处重复铺字叠在一起。',
           actionInstruction,
         );
         return updateStateWithTrace(state, response, 'present_node');
       })
       .addNode('clarify_node', (state) => {
         const response = buildResponse(
-          '我理解到你可能在发起协作任务。请补充：要创建文档、演示文稿，还是要向已有自由画布追加内容？',
+          '我理解到你可能在发起协作任务。请补充：要创建文档、画板，还是要向已有画板追加内容？',
         );
         return updateStateWithTrace(state, response, 'clarify_node');
       })

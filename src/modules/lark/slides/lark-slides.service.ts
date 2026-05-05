@@ -221,6 +221,67 @@ function describeSlideCreateTransportFailure(raw: unknown): string | undefined {
   return undefined;
 }
 
+function readHeaderValueCaseInsensitive(
+  headers: Record<string, unknown> | null,
+  headerName: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const expected = headerName.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== expected) continue;
+    if (typeof v === 'string' && v.trim().length > 0) {
+      return v.trim();
+    }
+    if (
+      Array.isArray(v) &&
+      v.length > 0 &&
+      typeof v[0] === 'string' &&
+      v[0].trim().length > 0
+    ) {
+      return v[0].trim();
+    }
+  }
+  return undefined;
+}
+
+function summarizeCreatePageProbe(raw: unknown): string {
+  if (typeof raw === 'string') {
+    const body = raw.trim();
+    const preview = body.length > 0 ? body.slice(0, 160) : 'empty string body';
+    return `status=n/a x-tt-logid=n/a body=${preview}`;
+  }
+  if (!isRecord(raw)) {
+    return `status=n/a x-tt-logid=n/a body=non-object(${typeof raw})`;
+  }
+
+  const status =
+    typeof raw['status'] === 'number' ? String(raw['status']) : 'n/a';
+  const headers = isRecord(raw['headers']) ? raw['headers'] : null;
+  const xTtLogId =
+    readHeaderValueCaseInsensitive(headers, 'x-tt-logid') ??
+    readHeaderValueCaseInsensitive(headers, 'x-tt-logid-bin') ??
+    'n/a';
+
+  const envelope = unwrapLarkHttpResponse(raw);
+  if (envelope) {
+    const code = readFeishuEnvelopeCode(envelope);
+    const msg = readOptionalString(envelope['msg']) ?? 'n/a';
+    const data = envelope['data'];
+    const dataShape = Array.isArray(data)
+      ? `array(len=${data.length})`
+      : isRecord(data)
+        ? `object(keys=${Object.keys(data).slice(0, 8).join(',')})`
+        : typeof data;
+    return `status=${status} x-tt-logid=${xTtLogId} code=${code ?? 'n/a'} msg=${msg} data=${dataShape}`;
+  }
+
+  const data = raw['data'];
+  if (typeof data === 'string') {
+    return `status=${status} x-tt-logid=${xTtLogId} body=${data.trim().slice(0, 160)}`;
+  }
+  return `status=${status} x-tt-logid=${xTtLogId} bodyType=${typeof data}`;
+}
+
 function readRevisionIdFromPresentationEnvelope(
   raw: unknown,
 ): string | undefined {
@@ -586,6 +647,9 @@ type LarkSlidesV1SlideBlockClient = {
 export class LarkSlidesService {
   private readonly logger = new Logger(LarkSlidesService.name);
   private client: Lark.Client | null = null;
+  private httpProbeTenantTokenCache:
+    | { token: string; expiresAtMs: number }
+    | undefined;
   private static readonly MAX_TEXT_BLOCK_CONTENT_LENGTH = 20_000;
   private static readonly MAX_BLOCKS_PER_REQUEST = 50;
   /**
@@ -652,6 +716,134 @@ export class LarkSlidesService {
     this.client = client;
   }
 
+  private shouldUseHttpProbe(): boolean {
+    if (typeof this.configService?.get !== 'function') {
+      return false;
+    }
+    return (
+      readOptionalString(
+        this.configService.get<string>('LARK_SLIDES_HTTP_PROBE'),
+      ) === 'true'
+    );
+  }
+
+  private async getTenantAccessTokenForHttpProbe(): Promise<
+    string | undefined
+  > {
+    const now = Date.now();
+    const cached = this.httpProbeTenantTokenCache;
+    if (cached && cached.expiresAtMs > now) {
+      return cached.token;
+    }
+
+    const appId = readOptionalString(
+      this.configService.get<string>('LARK_APP_ID'),
+    );
+    const appSecret = readOptionalString(
+      this.configService.get<string>('LARK_APP_SECRET'),
+    );
+    if (!appId || !appSecret) {
+      this.logger.warn(
+        '[slides-http-probe] 未配置 LARK_APP_ID/LARK_APP_SECRET，无法走原生 HTTP 探针',
+      );
+      return undefined;
+    }
+
+    let resp: Response;
+    try {
+      resp = await fetch(
+        'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+        },
+      );
+    } catch (e) {
+      this.logger.warn(
+        `[slides-http-probe] 获取 tenant_access_token 请求失败: ${(e as Error).message}`,
+      );
+      return undefined;
+    }
+
+    const text = await resp.text();
+    let json: Record<string, unknown> | null = null;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      json = isRecord(parsed) ? parsed : null;
+    } catch {
+      json = null;
+    }
+
+    const code = json ? readFeishuEnvelopeCode(json) : undefined;
+    const token = json
+      ? readOptionalString(json['tenant_access_token'])
+      : undefined;
+    if (!resp.ok || (code !== undefined && code !== 0) || !token) {
+      const msg = json ? readOptionalString(json['msg']) : undefined;
+      this.logger.warn(
+        `[slides-http-probe] 获取 tenant_access_token 失败: http=${resp.status} code=${code ?? 'n/a'} msg=${msg ?? text.slice(0, 120)}`,
+      );
+      return undefined;
+    }
+
+    const expire = json?.['expire'];
+    const expireSec =
+      typeof expire === 'number' && Number.isFinite(expire) ? expire : 7200;
+    this.httpProbeTenantTokenCache = {
+      token,
+      expiresAtMs: now + Math.max(30, expireSec - 60) * 1000,
+    };
+    return token;
+  }
+
+  private async requestWithHttpProbe(args: {
+    method: 'GET' | 'POST';
+    url: string;
+    params?: Record<string, unknown>;
+    data?: Record<string, unknown>;
+  }): Promise<unknown> {
+    const token = await this.getTenantAccessTokenForHttpProbe();
+    if (!token) {
+      throw new Error('http probe tenant_access_token unavailable');
+    }
+
+    const u = new URL(args.url);
+    for (const [k, v] of Object.entries(args.params ?? {})) {
+      if (v === undefined || v === null) continue;
+      const serialized =
+        readIdLikeString(v) ?? (typeof v === 'boolean' ? String(v) : undefined);
+      if (!serialized) continue;
+      u.searchParams.set(k, serialized);
+    }
+
+    const resp = await fetch(u.toString(), {
+      method: args.method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body:
+        args.method === 'POST' ? JSON.stringify(args.data ?? {}) : undefined,
+    });
+
+    const headersObj = Object.fromEntries(resp.headers.entries());
+    const bodyText = await resp.text();
+    let body: unknown = bodyText;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      body = bodyText;
+    }
+
+    return {
+      status: resp.status,
+      headers: headersObj,
+      config: { url: u.toString(), method: args.method },
+      data: body,
+    };
+  }
+
   /**
    * 与 {@link LarkDocService} 共用：自建应用使用 tenant_access_token 时，
    * 宜将云文档写入应用创建的文件夹，避免落根目录后出现「创建成功但后续只读接口 131001」。
@@ -706,15 +898,11 @@ export class LarkSlidesService {
       raw,
       presentationId,
     );
+    // 勿在此处单独调用 createPage：resolvePresentationSlideIds 已包含
+    // GET 元数据 → slides 为空则 POST 建页 → 列表兜底；前置 createPage 会导致探针与 WARN 重复一整轮。
     if (slideIdsFromCreate.length === 0) {
-      const revisionHint = readRevisionIdFromPresentationEnvelope(raw);
-      const createdFirst = await this.createPage(presentationId, revisionHint);
-      if (createdFirst) {
-        slideIdsFromCreate = [createdFirst];
-      } else {
-        slideIdsFromCreate =
-          await this.resolvePresentationSlideIds(presentationId);
-      }
+      slideIdsFromCreate =
+        await this.resolvePresentationSlideIds(presentationId);
     }
 
     const firstSlideIdFromCreate = slideIdsFromCreate[0];
@@ -798,18 +986,40 @@ export class LarkSlidesService {
 
     for (const a of attempts) {
       try {
-        const raw: unknown = await this.client.request({
-          method: 'GET',
-          url: a.url,
-          params: a.params,
-          validateStatus: () => true,
-        });
+        const useProbe = this.shouldUseHttpProbe();
+        const raw: unknown = useProbe
+          ? await this.requestWithHttpProbe({
+              method: 'GET',
+              url: a.url,
+              params: a.params,
+            })
+          : await this.client.request({
+              method: 'GET',
+              url: a.url,
+              params: a.params,
+              validateStatus: () => true,
+            });
+        if (useProbe) {
+          this.logger.warn(
+            `[slides-http-probe] listPages attempt=${a.label} response=${summarizeCreatePageProbe(raw)}`,
+          );
+        }
 
         if (typeof raw === 'string') {
           lastNonJson = raw.trim().slice(0, 120);
           continue;
         }
         if (!isRecord(raw)) {
+          continue;
+        }
+        const status = raw['status'];
+        const transportBody = raw['data'];
+        if (
+          typeof status === 'number' &&
+          status >= 400 &&
+          typeof transportBody === 'string'
+        ) {
+          lastNonJson = transportBody.trim().slice(0, 120);
           continue;
         }
 
@@ -1065,18 +1275,37 @@ export class LarkSlidesService {
     for (const a of attempts) {
       let raw: unknown;
       try {
-        raw = await this.client.request({
-          method: 'POST',
-          url: a.url,
-          data: a.data ?? {},
-          params: a.params,
-          headers: jsonHeaders,
-          validateStatus: () => true,
-        });
+        const useProbe = this.shouldUseHttpProbe();
+        raw = useProbe
+          ? await this.requestWithHttpProbe({
+              method: 'POST',
+              url: a.url,
+              params: a.params,
+              data: a.data ?? {},
+            })
+          : await this.client.request({
+              method: 'POST',
+              url: a.url,
+              data: a.data ?? {},
+              params: a.params,
+              headers: jsonHeaders,
+              validateStatus: () => true,
+            });
+        if (useProbe) {
+          this.logger.warn(
+            `[slides-http-probe] createPage attempt=${a.label} response=${summarizeCreatePageProbe(raw)}`,
+          );
+        }
       } catch (e) {
+        this.logger.warn(
+          `[createPage探针] attempt=${a.label} request=POST ${a.url} params=${JSON.stringify(a.params ?? {})} data=${JSON.stringify(a.data ?? {})} error=${(e as Error).message}`,
+        );
         failures.push(`${a.label}: ${(e as Error).message}`);
         continue;
       }
+      this.logger.warn(
+        `[createPage探针] attempt=${a.label} request=POST ${a.url} params=${JSON.stringify(a.params ?? {})} data=${JSON.stringify(a.data ?? {})} response=${summarizeCreatePageProbe(raw)}`,
+      );
       const transportBad = describeSlideCreateTransportFailure(raw);
       if (transportBad !== undefined) {
         failures.push(`${a.label}: ${transportBad}`);

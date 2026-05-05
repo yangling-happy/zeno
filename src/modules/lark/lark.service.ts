@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
+import { LarkBroadService } from './broad/lark-broad.service';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
@@ -36,42 +37,29 @@ interface LarkCardData {
   message?: string;
 }
 
-interface LarkWhiteboardNodeCreateResponse {
-  data?: {
-    node_id?: string;
-    id?: string;
-  };
-}
-
-interface LarkBoardClient {
-  board: {
-    v1: {
-      whiteboardNode: {
-        create(params: {
-          path: {
-            whiteboard_id: string;
-          };
-          data: {
-            type: 'TEXT';
-            text: string;
-          };
-        }): Promise<LarkWhiteboardNodeCreateResponse>;
-      };
-    };
-  };
-}
-
 interface StoppableWsClient {
   stop?: () => void | Promise<void>;
 }
 
-/** 与 {@link LarkSlidesService} 对齐，避免类型解析服务在跨文件分析时出现 no-unsafe-* 误报 */
-interface LarkSlidesWriter {
-  appendMarkdownToFirstSlide(
-    presentationId: string,
-    markdown: string,
-    preferredFirstSlideId?: string,
-  ): Promise<string[] | null>;
+/** 仅校验运行时形状；绕开 ESLint 将 switch 内 `action.params` 误判为 error 类型的问题 */
+function parseLarkBoardCreateParams(raw: unknown): {
+  title: string;
+  summary?: string;
+} | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null;
+  }
+  const o = raw as Record<string, unknown>;
+  if (typeof o.title !== 'string') {
+    return null;
+  }
+  if (o.summary !== undefined && typeof o.summary !== 'string') {
+    return null;
+  }
+  return {
+    title: o.title,
+    summary: o.summary === undefined ? undefined : o.summary,
+  };
 }
 
 @Injectable()
@@ -85,9 +73,15 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly processedMessageMaxSize = 5000;
   private readonly docService: LarkDocService;
   private readonly slidesService: LarkSlidesService;
+  private readonly broadService: LarkBroadService;
   private readonly userContextMap = new Map<
     string,
-    { docId?: string; presentId?: string; lastDocId?: string }
+    {
+      docId?: string;
+      presentId?: string;
+      lastDocId?: string;
+      lastWhiteboardId?: string;
+    }
   >();
 
   constructor(
@@ -98,6 +92,10 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   ) {
     this.docService = new LarkDocService(configService, instructionDetector);
     this.slidesService = new LarkSlidesService(
+      configService,
+      instructionDetector,
+    );
+    this.broadService = new LarkBroadService(
       configService,
       instructionDetector,
     );
@@ -119,6 +117,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.client = new Lark.Client({ appId, appSecret });
     this.docService.initClient(this.client);
     this.slidesService.initClient(this.client);
+    this.broadService.initClient(this.client);
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => {
@@ -317,6 +316,24 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
             this.userContextMap.set(userId, context);
           }
         }
+
+        if (result.actionInstruction.type === 'LARK_BOARD_CREATE') {
+          const wbId = this.extractWhiteboardIdFromActionResult(actionResult);
+          if (wbId) {
+            const uid = message.open_id || 'anonymous';
+            const context = this.userContextMap.get(uid) || {};
+            context.lastWhiteboardId = wbId;
+            this.userContextMap.set(uid, context);
+          }
+        }
+
+        if (result.actionInstruction.type === 'LARK_WHITEBOARD_APPEND') {
+          const uid = message.open_id || 'anonymous';
+          const context = this.userContextMap.get(uid) || {};
+          context.lastWhiteboardId =
+            result.actionInstruction.params.whiteboardId.trim();
+          this.userContextMap.set(uid, context);
+        }
       } else if (result.actionInstruction?.type === 'NONE') {
         const isInstruction =
           await this.instructionDetector.isInstruction(text);
@@ -405,6 +422,14 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     return urlMatch ? urlMatch[1] : null;
   }
 
+  /** 云文档创建目录；与 {@link LarkDocService#createDocument}、`LARK_CLOUD_FOLDER_TOKEN` 一致 */
+  private resolveCloudFolderToken(): string | undefined {
+    const raw = this.configService.get<string>('LARK_CLOUD_FOLDER_TOKEN');
+    return typeof raw === 'string' && raw.trim().length > 0
+      ? raw.trim()
+      : undefined;
+  }
+
   private async generateContentFromTopic(topic: string): Promise<string> {
     try {
       const content = await this.instructionDetector.processInstruction(
@@ -425,9 +450,14 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      const cloudFolderToken = this.resolveCloudFolderToken();
+
       switch (action.type) {
         case 'LARK_DOC_CREATE': {
-          const doc = await this.docService.createDocument(action.params.title);
+          const doc = await this.docService.createDocument(
+            action.params.title,
+            cloudFolderToken,
+          );
           const docUrl =
             doc.url && doc.url.startsWith('http')
               ? doc.url
@@ -453,17 +483,67 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
 
         case 'LARK_WHITEBOARD_APPEND': {
-          const nodeId = await this.appendToWhiteboard(
-            action.params.whiteboardId,
-            action.params.text,
+          const appendResult =
+            await this.broadService.appendMarkdownToWhiteboard(
+              action.params.whiteboardId,
+              action.params.text,
+            );
+          return `🧩 已写入画板（Markdown→文本节点 whiteboard=${action.params.whiteboardId}，共 ${appendResult.nodeIds.length} 个节点）`;
+        }
+
+        case 'LARK_BOARD_CREATE': {
+          if (action.type !== 'LARK_BOARD_CREATE') {
+            return '';
+          }
+          const params = parseLarkBoardCreateParams(
+            Reflect.get(action, 'params'),
           );
-          return `🧩 已写入自由画布（whiteboard=${action.params.whiteboardId}, node=${nodeId}）`;
+          if (!params) {
+            return '';
+          }
+          const baseTitle = params.title.trim();
+          const textDocTitle = `${baseTitle}（正文）`;
+          const boardDocTitle = `${baseTitle}（画板）`;
+
+          const textDoc = await this.docService.createDocument(
+            textDocTitle,
+            cloudFolderToken,
+          );
+          const contentToWrite = params.summary
+            ? params.summary.length <= 20
+              ? await this.generateContentFromTopic(params.summary)
+              : params.summary
+            : undefined;
+          if (contentToWrite) {
+            await this.docService.appendMarkdownToDocument(
+              textDoc.documentId,
+              contentToWrite,
+            );
+          }
+
+          const board = await this.broadService.createDocumentWithBoard(
+            boardDocTitle,
+            contentToWrite,
+            cloudFolderToken,
+          );
+
+          const textUrl =
+            textDoc.url && textDoc.url.startsWith('http')
+              ? textDoc.url
+              : `https://feishu.cn/docx/${textDoc.documentId}`;
+
+          return [
+            `🎨 已创建正文与画板（两个独立链接）：`,
+            `- 文档（完整正文）：${textUrl}`,
+            `- 画板（含摘要内容，方便浏览与整理）：${board.docUrl}`,
+            `- whiteboard_id=${board.whiteboardId}`,
+          ].join('\n');
         }
 
         case 'LARK_DOC_PRESENT_LINK': {
-          const doc = await this.docService.createDocument(action.params.title);
-          const present = await this.slidesService.createPresentation(
-            `${action.params.title}-演示`,
+          const doc = await this.docService.createDocument(
+            action.params.title,
+            cloudFolderToken,
           );
 
           if (action.params.summary) {
@@ -475,33 +555,14 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
               doc.documentId,
               contentToWrite,
             );
-
-            try {
-              const slidesWriter: LarkSlidesWriter = this.slidesService;
-              const slideBlockIds =
-                await slidesWriter.appendMarkdownToFirstSlide(
-                  present.presentationId,
-                  contentToWrite,
-                  present.firstSlideId,
-                );
-              if (slideBlockIds !== null) {
-                this.logger.log(
-                  `✅ 已向演示文稿写入 ${slideBlockIds.length} 个幻灯片内容块`,
-                );
-              }
-            } catch (err) {
-              this.logger.error(
-                `向演示文稿同步内容失败: ${(err as Error).message}`,
-                err as Error,
-              );
-            }
           }
 
-          return [
-            `🔗 已完成文档+演示串联：`,
-            `- 文档：${doc.url}`,
-            `- 演示/画布：${present.url}`,
-          ].join('\n');
+          const docUrl =
+            doc.url && doc.url.startsWith('http')
+              ? doc.url
+              : `https://feishu.cn/docx/${doc.documentId}`;
+
+          return `📄 已创建文档：${docUrl}`;
         }
 
         default:
@@ -513,27 +574,11 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async appendToWhiteboard(
-    whiteboardId: string,
-    text: string,
-  ): Promise<string> {
-    const boardClient = this.client as unknown as LarkBoardClient;
-    const response = await boardClient.board.v1.whiteboardNode.create({
-      path: {
-        whiteboard_id: whiteboardId,
-      },
-      data: {
-        type: 'TEXT',
-        text,
-      },
-    });
-
-    const nodeId = response.data?.node_id || response.data?.id;
-    if (!nodeId) {
-      throw new Error('白板写入失败，未返回 node_id');
-    }
-
-    return nodeId;
+  private extractWhiteboardIdFromActionResult(
+    actionResult: string,
+  ): string | null {
+    const m = actionResult.match(/whiteboard_id=([A-Za-z0-9_-]+)/);
+    return m ? m[1] : null;
   }
 
   private async reply(messageId: string | undefined, text: string) {

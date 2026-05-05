@@ -106,6 +106,32 @@ export class AgentToolService {
     }
 
     if (intent === 'SCENE_PRESENT') {
+      const wantsNewBoard =
+        /(?:新建|创建).*画板|画板.*(?:文档)?.*(?:创建|新建)|(?:单独|独立).*画板/.test(
+          normalizedText,
+        );
+
+      if (
+        wantsNewBoard &&
+        !(
+          typeof params?.whiteboardId === 'string' &&
+          params.whiteboardId.trim().length > 0
+        )
+      ) {
+        const summaryContent =
+          typeof params?.summary === 'string' &&
+          params.summary.trim().length > 0
+            ? params.summary.trim()
+            : this.extractTopicFromText(normalizedText);
+        return {
+          type: 'LARK_BOARD_CREATE',
+          params: {
+            title: presentTitle,
+            ...(summaryContent !== undefined && { summary: summaryContent }),
+          },
+        };
+      }
+
       if (
         typeof params?.whiteboardId === 'string' &&
         params.whiteboardId.trim().length > 0

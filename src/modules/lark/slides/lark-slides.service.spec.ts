@@ -46,14 +46,12 @@ describe('LarkSlidesService', () => {
   });
 
   it('createPresentation pulls slide_id via GET metadata when create omits slides', async () => {
-    const createPageFail = { code: 3130001, msg: 'param is invalid' };
     const request = jest
       .fn()
       .mockResolvedValueOnce({
         code: 0,
         data: { presentation: { presentation_id: 'pres_foldered' } },
       })
-      .mockResolvedValueOnce(createPageFail)
       .mockResolvedValueOnce({
         code: 0,
         data: {
@@ -79,18 +77,13 @@ describe('LarkSlidesService', () => {
       pages: [{ pageId: 'sld_meta' }],
     });
 
-    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenCalledTimes(2);
     expect(request.mock.calls[0][0]).toMatchObject({
       method: 'POST',
       url: 'https://open.feishu.cn/open-apis/slides/v1/presentations',
       data: { title: 'Deck', folder_token: 'fld_unit_test' },
     });
     expect(request.mock.calls[1][0]).toMatchObject({
-      method: 'POST',
-      url: 'https://open.feishu.cn/open-apis/slides/v1/presentations/pres_foldered/pages',
-      data: {},
-    });
-    expect(request.mock.calls[2][0]).toMatchObject({
       method: 'GET',
       url: 'https://open.feishu.cn/open-apis/slides/v1/presentations/pres_foldered',
       validateStatus: expect.any(Function),
@@ -111,7 +104,6 @@ describe('LarkSlidesService', () => {
     const request = jest
       .fn()
       .mockResolvedValueOnce(createBody)
-      .mockResolvedValueOnce(createPageFail)
       .mockResolvedValueOnce(emptyMeta)
       .mockResolvedValueOnce(createPageFail)
       .mockResolvedValueOnce(emptySlideList);
@@ -130,7 +122,7 @@ describe('LarkSlidesService', () => {
       pages: [],
     });
 
-    expect(request).toHaveBeenCalledTimes(5);
+    expect(request).toHaveBeenCalledTimes(4);
   });
 
   it('listSlideIds extracts slide_page_id nested under presentation.revision', async () => {

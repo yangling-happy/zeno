@@ -117,6 +117,13 @@ export type ActionInstruction =
       };
     }
   | {
+      type: 'LARK_BOARD_CREATE';
+      params: {
+        title: string;
+        summary?: string;
+      };
+    }
+  | {
       type: 'LARK_DOC_PRESENT_LINK';
       params: {
         title: string;
