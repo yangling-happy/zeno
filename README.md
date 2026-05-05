@@ -1,189 +1,221 @@
+<div align="center">
+
 # Zeno
 
-企业级智能对话平台，集成飞书消息接入、多模态大模型能力、长时记忆管理系统。
+Enterprise-grade intelligent dialogue platform integrating Feishu messaging, multi-modal LLM capabilities, and long-term memory management.
 
-## 技术栈
+**English** · [简体中文](./README.zh-CN.md)
 
-- 框架: NestJS
-- 语言: TypeScript
-- 数据库: PostgreSQL + pgvector
-- 缓存: Redis
-- ORM: Prisma
-- AI 能力: 字节跳动 ARK、Ollama
-- 部署: Docker / Docker Compose
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=nestjs,typescript,postgresql,redis,docker" />
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/Feishu-3387FF?style=flat-square&logo=&logoColor=white" />
+  <img src="https://img.shields.io/badge/ARK-4253E8?style=flat-square" />
+  <img src="https://img.shields.io/badge/Ollama-FF6B35?style=flat-square&logo=ollama&logoColor=white" />
+  <img src="https://img.shields.io/badge/pgvector-336791?style=flat-square" />
+</p>
 
-## 环境要求
+</div>
+
+---
+
+<details>
+<summary><kbd>Table of contents</kbd></summary>
+
+- [Features](#-features)
+- [Quick Start](#-quick-start)
+- [Architecture](#-architecture)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+</details>
+
+---
+
+## Features
+
+### Intent Recognition & Skill System
+
+Accurate intent classification with 9 skill categories covering task planning, documentation, whiteboard collaboration, presentation, cross-device sync, delivery, identity queries, safety responses, and clarification.
+
+| Intent         | Description                    |
+| -------------- | ------------------------------ |
+| SCENE_PLAN     | Task understanding & planning  |
+| SCENE_DOC      | Document/whiteboard editing    |
+| SCENE_PRESENT  | Whiteboard/presentation        |
+| SCENE_SYNC     | Cross-device synchronization   |
+| SCENE_DELIVERY | Summary & delivery             |
+| AGENT_IDENTITY | Identity queries               |
+| SAFE_REFUSAL   | Safety responses               |
+| CLARIFY        | Ambiguous intent clarification |
+| CHITCHAT       | Casual conversation            |
+
+### Three-tier Memory Architecture
+
+```
+User Input
+    │
+    ▼
+┌─────────────────┐
+│   Redis Cache   │ ← Immediate context (recent conversations)
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  PostgreSQL     │ ← Long-term history (structured storage)
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│   pgvector      │ ← Vector search (semantic fact retrieval)
+└─────────────────┘
+```
+
+### Data Models
+
+- **ConversationHistory**: Conversation records (userId, role, content, metadata)
+- **FactSnippet**: Extracted facts (userId, content, category, embedding)
+- **UserSession**: User session state (sessionData, lastActive)
+
+### Feishu Integration
+
+- Long connection messaging via Feishu SDK
+- Document, whiteboard, and presentation creation
+- Rich media support
+
+---
+
+## Quick Start
+
+### Prerequisites
 
 - Node.js >= 20
 - pnpm >= 8
-- Docker (可选，用于依赖服务部署)
+- Docker (optional, for dependency services)
 
-## 快速开始
+### Method 1: Docker Full Deployment (Recommended)
 
-### 方式一：Docker 完整部署（推荐）
+All services run in Docker containers without local environment setup.
 
-所有服务（后端应用 + 依赖服务）均运行在 Docker 容器中，无需安装任何本地环境。
-
-1. 配置环境变量
+1. Configure environment variables
 
 ```bash
 cp .env.example .env
-# 编辑 .env 文件，填写飞书、ARK 等必要配置信息
+# Edit .env with Feishu, ARK credentials
 ```
 
-2. 构建并启动所有服务（首次启动需要构建镜像）
+2. Build and start services
 
 ```bash
 docker-compose build
 docker-compose up -d
 ```
 
-3. 执行数据库迁移
+3. Run database migrations
 
 ```bash
 docker exec -it zeno-app npx prisma migrate dev --name init
 ```
 
-4. 下载 Ollama 向量模型
+4. Download Ollama embedding model
 
 ```bash
 docker exec -it zeno-ollama ollama run nomic-embed-text
 ```
 
-5. 验证服务状态
+### Method 2: Docker Dev Mode (Hot Reload)
 
 ```bash
-docker-compose ps
-# 所有服务状态应为 Up (healthy)
-```
-
-### 方式二：Docker 开发模式（支持热重载）
-
-适用于需要在容器中开发，且代码修改后自动热重载的场景。配置与方式一相同，启动后修改本地 `src/` 目录的代码会自动触发服务重启。
-
-```bash
-# 首次启动需要构建开发镜像
 docker-compose build
-
-# 启动服务（开发模式，支持热重载）
 docker-compose up
-
-# 代码修改后无需重启容器，NestJS 会自动检测并热重载
 ```
 
-### 方式三：本地开发模式
+### Method 3: Local Development
 
-适用于需要完全本地运行，不使用 Docker 容器的开发场景。
-
-1. 安装依赖
+1. Install dependencies
 
 ```bash
 pnpm install
 ```
 
-2. 启动依赖服务
+2. Start dependency services
 
 ```bash
 docker-compose up -d redis postgres ollama
 ```
 
-3. 配置环境变量
+3. Configure environment variables
 
 ```bash
 cp .env.example .env
-# 编辑 .env 文件，填写必要的配置信息
 ```
 
-4. 数据库迁移
+4. Run migrations
 
 ```bash
 npx prisma migrate dev --name init
 ```
 
-5. 启动开发服务
+5. Start dev server
 
 ```bash
 pnpm run start:dev
 ```
 
-## 服务端口
+## Service Ports
 
-| 服务       | 端口  | 说明                   |
-| ---------- | ----- | ---------------------- |
-| 主应用     | 3000  | API 服务               |
-| Redis      | 6379  | 缓存和即时上下文存储   |
-| PostgreSQL | 5432  | 关系型数据库和向量存储 |
-| Ollama     | 11434 | 向量生成服务           |
+| Service    | Port  | Description                 |
+| ---------- | ----- | --------------------------- |
+| Main App   | 3000  | API service                 |
+| Redis      | 6379  | Cache & immediate context   |
+| PostgreSQL | 5432  | Relational & vector storage |
+| Ollama     | 11434 | Vector embedding service    |
 
-## 常用命令
-
-### Docker 部署相关
-
-```bash
-# 构建应用镜像（代码修改后需要重新执行）
-docker build -t zeno-app .
-
-# 启动所有服务
-docker-compose up -d
-
-# 重启指定服务
-docker-compose restart [服务名]
-
-# 查看服务状态
-docker-compose ps
-
-# 查看服务日志
-docker-compose logs -f [服务名]
-
-# 停止所有服务
-docker-compose down
-
-# 停止所有服务并删除数据卷（谨慎使用）
-docker-compose down -v
-
-# 进入应用容器执行命令
-docker exec -it zeno-app bash
-```
-
-### 开发相关
-
-```bash
-# 开发模式启动
-pnpm run start:dev
-
-# 生产构建
-pnpm run build
-
-# 生产模式启动
-pnpm run start:prod
-
-# 生成 Prisma Client
-npx prisma generate
-
-# 创建数据库迁移
-npx prisma migrate dev
-
-# 数据库可视化工具
-npx prisma studio
-```
-
-## 项目结构
+## Architecture
 
 ```
 src/
 ├── modules/
-│   ├── lark/          # 飞书消息接入模块
-│   ├── agent/         # 智能代理模块
-│   ├── memory/        # 记忆管理模块
-│   └── common/        # 公共组件
-└── main.ts            # 应用入口
+│   ├── lark/          # Feishu messaging module
+│   ├── agent/         # Intelligent agent module
+│   ├── memory/        # Memory management module
+│   └── common/        # Shared utilities
+└── main.ts            # Application entry
 ```
 
-## 核心功能
+## Environment Variables
 
-- 飞书长连接消息接入
-- 多轮对话上下文管理
-- 三层记忆存储架构（Redis/PostgreSQL/pgvector）
-- 自动事实提取和向量存储
-- 语义检索长期记忆
-- 意图识别和任务调度
+| Variable         | Description                  | Required |
+| ---------------- | ---------------------------- | -------- |
+| LARK_APP_ID      | Feishu application ID        | Yes      |
+| LARK_APP_SECRET  | Feishu application secret    | Yes      |
+| LARK_WEBHOOK_URL | Feishu webhook URL           | Yes      |
+| ARK_API_KEY      | ByteDance ARK API key        | Yes      |
+| ARK_BASE_URL     | ARK API endpoint             | Yes      |
+| DATABASE_URL     | PostgreSQL connection string | Yes      |
+| REDIS_HOST       | Redis host                   | Yes      |
+| REDIS_PORT       | Redis port                   | Yes      |
+| OLLAMA_BASE_URL  | Ollama service address       | Yes      |
+
+## Tech Stack
+
+| Category   | Technologies            |
+| ---------- | ----------------------- |
+| Framework  | NestJS                  |
+| Language   | TypeScript              |
+| Database   | PostgreSQL + pgvector   |
+| Cache      | Redis                   |
+| ORM        | Prisma                  |
+| AI         | ByteDance ARK, Ollama   |
+| Deployment | Docker / Docker Compose |
+
+---
+
+## Contributing
+
+Contributions, issues, and feature requests are welcome!
+
+---
+
+## License
+
+ISC
