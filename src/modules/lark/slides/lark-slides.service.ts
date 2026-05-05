@@ -20,31 +20,484 @@ function readOptionalString(value: unknown): string | undefined {
     : undefined;
 }
 
-function parsePresentationCreateResponse(raw: unknown): string | undefined {
+function readIdLikeString(value: unknown): string | undefined {
+  const s = readOptionalString(value);
+  if (s) return s;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const n = String(value);
+    return n.length > 0 ? n : undefined;
+  }
+  return undefined;
+}
+
+/** 值侧 token：飞书部分环境的页 token 为全小写字母串（无语义级大写/数字），此前误判丢弃导致采集为空。 */
+function looksLikeFeishuOpaqueTokenValue(value: string): boolean {
+  if (!/^[A-Za-z0-9_-]{12,}$/.test(value)) return false;
+  return !/^[a-z]+(_[a-z]+)+$/.test(value);
+}
+
+/** 映射键：允许全小写随机串，但排除典型 API 字段名误当作页 token。 */
+const RESERVED_SLIDE_MAP_KEYS = new Set(
+  [
+    'presentation_id',
+    'revision_id',
+    'layout_id',
+    'master_id',
+    'page_size',
+    'folder_token',
+    'parent_id',
+    'document_id',
+  ].map((s) => s.toLowerCase()),
+);
+
+function looksLikeFeishuOpaqueTokenMapKey(key: string): boolean {
+  if (RESERVED_SLIDE_MAP_KEYS.has(key.toLowerCase())) return false;
+  return looksLikeFeishuOpaqueTokenValue(key);
+}
+
+function summarizeSlidesBranchForLog(slides: unknown): string {
+  if (slides === undefined) return 'undefined';
+  if (slides === null) return 'null';
+  if (Array.isArray(slides)) {
+    if (slides.length === 0) return 'array(len=0)';
+    const first: unknown = slides[0];
+    if (isRecord(first)) {
+      const keys = Object.keys(first);
+      const head = keys.slice(0, 20).join(',');
+      return `array(len=${slides.length},firstKeys=[${head}${keys.length > 20 ? ',…' : ''}])`;
+    }
+    return `array(len=${slides.length},firstType=${typeof first})`;
+  }
+  if (isRecord(slides)) {
+    const keys = Object.keys(slides);
+    const head = keys.slice(0, 20).join(',');
+    return `object(keys=[${head}${keys.length > 20 ? ',…' : ''}])`;
+  }
+  return `type=${typeof slides}`;
+}
+
+/**
+ * `presentation.slides` 有时为「token → 页元数据」映射而非数组；
+ * 仅在值均为对象且键形似 token 时把键当作 slide_id。
+ */
+function extractSlideIdsFromKeyedSlideMap(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const entries = Object.entries(value);
+  if (entries.length === 0) return [];
+
+  const keysAsIds: string[] = [];
+  let objectValueCount = 0;
+  for (const [k, v] of entries) {
+    if (!looksLikeFeishuOpaqueTokenMapKey(k)) {
+      return [];
+    }
+    if (isRecord(v)) {
+      objectValueCount += 1;
+      keysAsIds.push(k);
+    }
+  }
+  if (objectValueCount === 0 || objectValueCount !== entries.length) {
+    return [];
+  }
+  return keysAsIds;
+}
+
+/**
+ * 将各种形态的 slides 字段规整为可遍历的列表（数组、items 包裹、纯 Record 列表值等）。
+ */
+function coerceSlidesIterable(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (!isRecord(value)) return [];
+
+  const nestedKeys = [
+    'items',
+    'slide_list',
+    'slides',
+    'pages',
+    'slide_pages',
+    'values',
+    'list',
+  ] as const;
+  for (const k of nestedKeys) {
+    const inner = value[k];
+    if (Array.isArray(inner)) return inner;
+  }
+
+  const fromKeyedMap = extractSlideIdsFromKeyedSlideMap(value);
+  if (fromKeyedMap.length > 0) {
+    return fromKeyedMap.map((id) => ({ slide_id: id }));
+  }
+
+  const vals = Object.values(value);
+  if (vals.length > 0 && vals.every((x) => isRecord(x))) {
+    return vals;
+  }
+  return [];
+}
+
+function readSlideIdFromSlideRecord(
+  item: Record<string, unknown>,
+  depth: number,
+): string | undefined {
+  if (depth <= 0) return undefined;
+
+  const direct =
+    readIdLikeString(item['slide_id']) ??
+    readIdLikeString(item['slideId']) ??
+    readIdLikeString(item['slide_page_id']) ??
+    readIdLikeString(item['page_id']) ??
+    readIdLikeString(item['slide_token']) ??
+    readIdLikeString(item['slideToken']) ??
+    readIdLikeString(item['page_token']) ??
+    readIdLikeString(item['object_token']) ??
+    readIdLikeString(item['token']) ??
+    readIdLikeString(item['id']);
+
+  if (direct) return direct;
+
+  const nestedKeys = ['slide', 'page', 'slide_page', 'properties'] as const;
+  for (const nk of nestedKeys) {
+    const inner = item[nk];
+    if (isRecord(inner)) {
+      const nested = readSlideIdFromSlideRecord(inner, depth - 1);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+/** 兼容部分网关/序列化把 code 写成字符串的情况 */
+function readFeishuEnvelopeCode(
+  raw: Record<string, unknown>,
+): number | undefined {
+  const c = raw['code'];
+  if (typeof c === 'number' && Number.isFinite(c)) {
+    return c;
+  }
+  if (typeof c === 'string' && /^\d+$/.test(c)) {
+    return parseInt(c, 10);
+  }
+  return undefined;
+}
+
+/**
+ * Lark {@link Lark.Client.request} 返回 axios 完整响应（含 status/config/data），
+ * 飞书 JSON 体在 `response.data`；单测等处也可直接传入 `{ code, data }` 信封。
+ */
+function unwrapLarkHttpResponse(raw: unknown): Record<string, unknown> | null {
+  if (!isRecord(raw)) return null;
+  const looksLikeAxios =
+    typeof raw['status'] === 'number' &&
+    raw['config'] !== undefined &&
+    'data' in raw;
+  const envelope = looksLikeAxios ? raw['data'] : raw;
+  return isRecord(envelope) ? envelope : null;
+}
+
+/** 建页 POST 非成功传输层（纯文本/HTML、HTTP≥400），便于与业务 code≠0 区分。 */
+function describeSlideCreateTransportFailure(raw: unknown): string | undefined {
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length > 0 ? t.slice(0, 160) : 'empty string body';
+  }
   if (!isRecord(raw)) return undefined;
-  const data = raw['data'];
-  if (!isRecord(data)) return undefined;
-  const presentation = data['presentation'];
+  const status = raw['status'];
+  if (typeof status === 'number' && status >= 400) {
+    const data = raw['data'];
+    if (typeof data === 'string') {
+      const t = data.trim();
+      return `HTTP ${status} ${t.slice(0, 160)}`;
+    }
+    const inner = unwrapLarkHttpResponse(raw);
+    if (inner) {
+      const code = readFeishuEnvelopeCode(inner);
+      const msg = readOptionalString(inner['msg']);
+      if (code !== undefined) {
+        return `HTTP ${status} body code=${code} msg=${msg ?? 'unknown'}`;
+      }
+    }
+    return `HTTP ${status}`;
+  }
+  return undefined;
+}
+
+function readRevisionIdFromPresentationEnvelope(
+  raw: unknown,
+): string | undefined {
+  const envelope = unwrapLarkHttpResponse(raw);
+  if (!envelope) return undefined;
+  const biz = isRecord(envelope['data']) ? envelope['data'] : null;
+  if (!biz) return undefined;
+  const pres = isRecord(biz['presentation']) ? biz['presentation'] : null;
+  return pres ? readIdLikeString(pres['revision_id']) : undefined;
+}
+
+/** 字段值严禁当作页 token 采集（名称稳定、语义明确）。 */
+const HARVEST_TOKEN_KEY_BLOCKLIST = new Set(
+  [
+    'presentation_id',
+    'revision_id',
+    'layout_id',
+    'master_id',
+    'theme_id',
+    'template_id',
+    'font_id',
+    'page_size',
+    'folder_token',
+    'parent_id',
+    'document_id',
+    'style_id',
+    'color_id',
+    'width',
+    'height',
+  ].map((s) => s.toLowerCase()),
+);
+
+/**
+ * 线网元数据里页 token 偶发落在非常规字段名上；仅在 slides/layouts/masters 子树内，
+ * 按字段名启发式采集。空白 slides + 仅 layouts 有数据时，字段名未必含 slide/page，
+ * 故补充 `_id` / `_token` 后缀兜底（仍排除 layout/master 语义字段）。
+ */
+function keyMayHoldSlidePageToken(key: string): boolean {
+  const k = key.toLowerCase();
+  if (HARVEST_TOKEN_KEY_BLOCKLIST.has(k)) return false;
+  if (k.includes('layout') && !k.includes('slide')) return false;
+  if (k.includes('master') && !k.includes('slide')) return false;
+  if (k === 'id' || k === 'token') return true;
+  if (k.includes('slide') && (k.includes('id') || k.includes('token')))
+    return true;
+  if (k.includes('page') && (k.includes('id') || k.includes('token')))
+    return true;
+  if (k.endsWith('_token') || k.endsWith('_id')) return true;
+  return false;
+}
+
+function harvestSlidePageTokensFromPresentationBranches(
+  presentation: Record<string, unknown>,
+  excludePresentationId: string | undefined,
+): string[] {
+  const revisionId = readIdLikeString(presentation['revision_id']);
+  const exclude = new Set<string>();
+  const presId = readOptionalString(excludePresentationId);
+  if (presId) exclude.add(presId);
+  if (revisionId) exclude.add(revisionId);
+
+  const found: string[] = [];
+  const seen = new Set<string>();
+  let nodesVisited = 0;
+  const MAX_NODES = 800;
+
+  const visit = (v: unknown): void => {
+    if (nodesVisited++ > MAX_NODES) return;
+    if (Array.isArray(v)) {
+      for (const x of v) visit(x);
+      return;
+    }
+    if (!isRecord(v)) return;
+    for (const [key, val] of Object.entries(v)) {
+      if (typeof val === 'string' && keyMayHoldSlidePageToken(key)) {
+        if (
+          looksLikeFeishuOpaqueTokenValue(val) &&
+          !exclude.has(val) &&
+          !seen.has(val)
+        ) {
+          seen.add(val);
+          found.push(val);
+        }
+      }
+      visit(val);
+    }
+  };
+
+  for (const branchKey of ['slides', 'layouts', 'masters'] as const) {
+    const branch = presentation[branchKey];
+    if (branch !== undefined && branch !== null) {
+      visit(branch);
+    }
+  }
+  return found;
+}
+
+function parsePresentationCreateResponse(raw: unknown): string | undefined {
+  const envelope = unwrapLarkHttpResponse(raw);
+  if (!envelope) return undefined;
+  const biz = isRecord(envelope['data']) ? envelope['data'] : null;
+  if (!biz) return undefined;
+  const presentation = biz['presentation'];
   if (isRecord(presentation)) {
     const id = readOptionalString(presentation['presentation_id']);
     if (id) return id;
   }
-  return readOptionalString(data['presentation_id']);
+  return readOptionalString(biz['presentation_id']);
+}
+
+function extractSlideIdsFromUnknownList(value: unknown): string[] {
+  const iterable = coerceSlidesIterable(value);
+  const ids: string[] = [];
+  for (const item of iterable) {
+    if (typeof item === 'string' || typeof item === 'number') {
+      const id = readIdLikeString(item);
+      if (id) ids.push(id);
+      continue;
+    }
+    if (!isRecord(item)) continue;
+    const id = readSlideIdFromSlideRecord(item, 4);
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * 线网「获取演示文稿」响应里 slide 列表可能嵌套在 revision / slide_list 等路径下，
+ * 或仅用 slide_page_id 等字段命名；在浅层解析为空时做有限深度 DFS。
+ */
+function deepCollectSlideIdsFromEnvelope(
+  value: unknown,
+  options: { maxDepth: number; excludeToken?: string },
+): string[] {
+  const visited = new WeakSet<object>();
+  const SLIDE_KEY_HINTS = [
+    'slide_id',
+    'slideId',
+    'slide_page_id',
+    'slide_token',
+    'slideToken',
+    'page_token',
+    'object_token',
+    'default_slide_id',
+    'first_slide_id',
+    'primary_slide_id',
+    'page_id',
+  ] as const;
+
+  const found = new Set<string>();
+  const exclude = readOptionalString(options.excludeToken);
+
+  const walk = (v: unknown, d: number): void => {
+    if (d > options.maxDepth || v === null || v === undefined) {
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const el of v) {
+        walk(el, d + 1);
+      }
+      return;
+    }
+    if (!isRecord(v)) {
+      return;
+    }
+    if (visited.has(v)) {
+      return;
+    }
+    visited.add(v);
+
+    for (const key of SLIDE_KEY_HINTS) {
+      const s = readOptionalString(v[key]);
+      if (s && (!exclude || s !== exclude)) {
+        found.add(s);
+      }
+    }
+
+    for (const child of Object.values(v)) {
+      walk(child, d + 1);
+    }
+  };
+
+  walk(value, 0);
+  return [...found];
+}
+
+function mergeSlideIdLists(preferred: string[], extra: string[]): string[] {
+  const out = [...preferred];
+  for (const id of extra) {
+    if (!out.includes(id)) {
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** 从创建演示文稿的响应体中尽量解析 slide_id 列表（顺序：presentation 内嵌 → data 根字段）。 */
+function parsePresentationCreateSlideIds(
+  raw: unknown,
+  excludePresentationId?: string,
+): string[] {
+  const envelope = unwrapLarkHttpResponse(raw);
+  if (!envelope) return [];
+
+  const biz = isRecord(envelope['data']) ? envelope['data'] : null;
+  if (!biz) {
+    return deepCollectSlideIdsFromEnvelope(envelope, {
+      maxDepth: 14,
+      excludeToken: excludePresentationId,
+    });
+  }
+
+  const ordered: string[] = [];
+  const pushUnique = (next: string[]) => {
+    for (const id of next) {
+      if (!ordered.includes(id)) ordered.push(id);
+    }
+  };
+
+  const pres = isRecord(biz['presentation']) ? biz['presentation'] : null;
+  if (pres) {
+    pushUnique(extractSlideIdsFromUnknownList(pres['slides']));
+    pushUnique(extractSlideIdsFromUnknownList(pres['slide_list']));
+    pushUnique(extractSlideIdsFromUnknownList(pres['pages']));
+    pushUnique(extractSlideIdsFromUnknownList(pres['slide_pages']));
+    pushUnique(extractSlideIdsFromUnknownList(pres['revision_slides']));
+    const rev = pres['revision'];
+    if (isRecord(rev)) {
+      pushUnique(extractSlideIdsFromUnknownList(rev['slides']));
+      pushUnique(extractSlideIdsFromUnknownList(rev['slide_list']));
+      pushUnique(extractSlideIdsFromUnknownList(rev['pages']));
+      pushUnique(extractSlideIdsFromUnknownList(rev['revision_slides']));
+    }
+    const one =
+      readOptionalString(pres['slide_id']) ??
+      readOptionalString(pres['default_slide_id']);
+    if (one) pushUnique([one]);
+
+    pushUnique(
+      harvestSlidePageTokensFromPresentationBranches(
+        pres,
+        excludePresentationId,
+      ),
+    );
+  }
+
+  pushUnique(extractSlideIdsFromUnknownList(biz['slides']));
+  pushUnique(extractSlideIdsFromUnknownList(biz['slide_list']));
+  pushUnique(extractSlideIdsFromUnknownList(biz['pages']));
+  pushUnique(extractSlideIdsFromUnknownList(biz['slide_pages']));
+  pushUnique(extractSlideIdsFromUnknownList(biz['revision_slides']));
+  const rootOne =
+    readOptionalString(biz['slide_id']) ??
+    readOptionalString(biz['default_slide_id']);
+  if (rootOne) pushUnique([rootOne]);
+
+  return mergeSlideIdLists(
+    ordered,
+    deepCollectSlideIdsFromEnvelope(envelope, {
+      maxDepth: 14,
+      excludeToken: excludePresentationId,
+    }),
+  );
 }
 
 function parseListSlideIdsResponse(raw: unknown): string[] {
-  if (!isRecord(raw)) return [];
-  const rootData = isRecord(raw['data']) ? raw['data'] : raw;
+  const envelope = unwrapLarkHttpResponse(raw);
+  if (!envelope) return [];
+
+  const rootData = isRecord(envelope['data']) ? envelope['data'] : envelope;
   const code =
-    typeof raw['code'] === 'number'
-      ? raw['code']
-      : typeof rootData['code'] === 'number'
-        ? rootData['code']
-        : undefined;
+    readFeishuEnvelopeCode(envelope) ??
+    (isRecord(rootData) ? readFeishuEnvelopeCode(rootData) : undefined);
   if (code !== undefined && code !== 0) {
     const msg =
-      readOptionalString(raw['msg']) ??
-      readOptionalString(rootData['msg']) ??
+      readOptionalString(envelope['msg']) ??
+      (isRecord(rootData) ? readOptionalString(rootData['msg']) : undefined) ??
       'unknown';
     throw new Error(`列出幻灯片页失败（${code}）: ${msg}`);
   }
@@ -57,17 +510,23 @@ function parseListSlideIdsResponse(raw: unknown): string[] {
     nested?.['items'],
     rootData['slide_list'],
   ];
-  const slidesRaw =
-    slideListCandidates.find((v): v is unknown[] => Array.isArray(v)) ?? [];
+  let slidesRaw: unknown[] = [];
+  for (const c of slideListCandidates) {
+    if (c === undefined) continue;
+    const coerced = coerceSlidesIterable(c);
+    if (coerced.length > 0) {
+      slidesRaw = coerced;
+      break;
+    }
+  }
 
   return slidesRaw
     .map((item) => {
+      if (typeof item === 'string' || typeof item === 'number') {
+        return readIdLikeString(item);
+      }
       if (!isRecord(item)) return undefined;
-      return (
-        readOptionalString(item['slide_id']) ??
-        readOptionalString(item['slideId']) ??
-        readOptionalString(item['id'])
-      );
+      return readSlideIdFromSlideRecord(item, 4);
     })
     .filter((id): id is string => id !== undefined);
 }
@@ -129,8 +588,60 @@ export class LarkSlidesService {
   private client: Lark.Client | null = null;
   private static readonly MAX_TEXT_BLOCK_CONTENT_LENGTH = 20_000;
   private static readonly MAX_BLOCKS_PER_REQUEST = 50;
-  /** 创建后拉取幻灯片列表的重试间隔（含首次立即请求） */
-  private static readonly LIST_SLIDES_WARMUP_DELAYS_MS = [0, 600, 2000];
+  /**
+   * GET 演示文稿元数据失败时的最大连续尝试次数（首次立即，间隔为 0，不做「等页面出现」式退避）。
+   * 新建演示文稿后若创建响应未带页列表，会先在 createPresentation 内 POST 新建第一页；
+   * 一旦 GET 成功解析到元数据但 slides 为空，立即 POST 新建第一页，不依赖延长等待服务端补齐默认页。
+   */
+  private static readonly PRESENTATION_META_FETCH_MAX_ATTEMPTS = 4;
+
+  /**
+   * Slides OpenAPI 下列出/新建「页」的路径后缀（官方为 `pages`，勿使用 `/slides`）。
+   */
+  private static readonly PRESENTATION_PAGES_RESOURCE = 'pages';
+
+  /**
+   * 单测可设为较小正整数以缩短循环；线网勿用。
+   * @internal
+   */
+  static testPresentationMetaFetchMaxAttempts: number | null = null;
+
+  private presentationMetaFetchMaxAttempts(): number {
+    return (
+      LarkSlidesService.testPresentationMetaFetchMaxAttempts ??
+      LarkSlidesService.PRESENTATION_META_FETCH_MAX_ATTEMPTS
+    );
+  }
+
+  /**
+   * 另：`GET .../presentations/:id/pages` 列页（勿用 `/slides` 后缀）。
+   * 默认在「单演示文稿」元数据反复拿不到 slide_id 时再尝试一次列表接口。
+   * 若需完全跳过该请求（避免噪音日志），设置 `LARK_SLIDES_DISABLE_LEGACY_LIST_FALLBACK=true`。
+   *
+   * `LARK_SLIDES_USE_LEGACY_LIST_SLIDES_PATH=true` 仍保留：为 true 时与默认相同；
+   * 为 false 时等价于禁用上述 fallback（与 DISABLE 一致）。
+   */
+  private shouldTryLegacyListSlidesFallback(): boolean {
+    if (typeof this.configService?.get !== 'function') {
+      return true;
+    }
+    const disable =
+      readOptionalString(
+        this.configService.get<string>(
+          'LARK_SLIDES_DISABLE_LEGACY_LIST_FALLBACK',
+        ),
+      ) === 'true';
+    if (disable) {
+      return false;
+    }
+    const legacyFlag = readOptionalString(
+      this.configService.get<string>('LARK_SLIDES_USE_LEGACY_LIST_SLIDES_PATH'),
+    );
+    if (legacyFlag === 'false') {
+      return false;
+    }
+    return true;
+  }
 
   constructor(
     private readonly configService: ConfigService,
@@ -191,77 +702,424 @@ export class LarkSlidesService {
 
     this.logger.log(`✅ 幻灯片创建成功: ${presentationId}`);
 
-    await this.warmupPresentationListAccess(presentationId);
+    let slideIdsFromCreate = parsePresentationCreateSlideIds(
+      raw,
+      presentationId,
+    );
+    if (slideIdsFromCreate.length === 0) {
+      const revisionHint = readRevisionIdFromPresentationEnvelope(raw);
+      const createdFirst = await this.createPage(presentationId, revisionHint);
+      if (createdFirst) {
+        slideIdsFromCreate = [createdFirst];
+      } else {
+        slideIdsFromCreate =
+          await this.resolvePresentationSlideIds(presentationId);
+      }
+    }
+
+    const firstSlideIdFromCreate = slideIdsFromCreate[0];
 
     return {
       presentationId,
       url: `https://feishu.cn/slides/${presentationId}`,
-      pages: [],
+      pages: slideIdsFromCreate.map((pageId) => ({ pageId })),
+      firstSlideId: firstSlideIdFromCreate,
     };
   }
 
-  /** 确认「列出幻灯片」对当前身份可用，减轻创建后短时 404/131001。 */
-  private async warmupPresentationListAccess(
-    presentationId: string,
-  ): Promise<void> {
-    const delays = LarkSlidesService.LIST_SLIDES_WARMUP_DELAYS_MS;
-    let lastErr: unknown;
-    for (let i = 0; i < delays.length; i++) {
-      const wait = delays[i] ?? 0;
-      if (wait > 0) {
-        await new Promise((r) => setTimeout(r, wait));
-      }
-      try {
-        await this.fetchPresentationSlideIds(presentationId);
-        return;
-      } catch (e) {
-        lastErr = e;
-        if (i < delays.length - 1) {
-          this.logger.warn(
-            `演示文稿列表暂不可读，将重试 (${i + 1}/${delays.length}): ${presentationId} — ${(e as Error).message}`,
-          );
-        }
-      }
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  private presentationResourceUrl(presentationId: string): string {
+    return `https://open.feishu.cn/open-apis/slides/v1/presentations/${encodeURIComponent(
+      presentationId,
+    )}`;
   }
 
-  private async fetchPresentationSlideIds(
+  /** 单次 GET 演示文稿，提取 revision_id；用于列表为空后再次建页（POST 须使用 `/pages` 而非 `/slides`）。 */
+  private async fetchPresentationRevisionHint(
     presentationId: string,
+  ): Promise<string | undefined> {
+    if (!this.client) {
+      return undefined;
+    }
+    try {
+      const raw: unknown = await this.client.request({
+        method: 'GET',
+        url: this.presentationResourceUrl(presentationId),
+        validateStatus: () => true,
+      });
+      if (!this.isSuccessfulPresentationMetaFetch(raw)) {
+        return undefined;
+      }
+      return readRevisionIdFromPresentationEnvelope(raw);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 「列出演示文稿页面」：`GET .../presentations/:id/pages`（及带 revision 的变体）。
+   * 若元数据含 `revision_id`，优先尝试 `.../revisions/:revision_id/pages` 与 `.../pages?revision_id=`。
+   * @see https://open.feishu.cn/document/server-docs/docs/slides-v1/slide/list
+   */
+  private async fetchSlideIdsFromLegacyListPath(
+    presentationId: string,
+    revisionId?: string,
   ): Promise<string[]> {
     if (!this.client) {
       throw new Error('飞书客户端未初始化');
     }
 
-    const raw: unknown = await this.client.request({
-      method: 'GET',
-      url: `https://open.feishu.cn/open-apis/slides/v1/presentations/${encodeURIComponent(
-        presentationId,
-      )}/slides`,
+    const base = this.presentationResourceUrl(presentationId);
+    const attempts: Array<{
+      label: string;
+      url: string;
+      params: Record<string, unknown>;
+    }> = [];
+
+    const rev = readIdLikeString(revisionId);
+    if (rev) {
+      attempts.push({
+        label: 'revisions/.../pages',
+        url: `${base}/revisions/${encodeURIComponent(rev)}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+        params: { page_size: 100 },
+      });
+      attempts.push({
+        label: 'pages?revision_id',
+        url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+        params: { page_size: 100, revision_id: rev },
+      });
+    }
+    attempts.push({
+      label: 'pages',
+      url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
       params: { page_size: 100 },
     });
 
-    if (isRecord(raw)) {
-      const code = raw['code'];
-      if (typeof code === 'number' && code !== 0) {
-        const msg = readOptionalString(raw['msg']) ?? 'unknown';
-        this.logger.error(
-          `列出幻灯片页失败: presentation_id=${presentationId} code=${code} msg=${msg}`,
+    let lastNonJson: string | undefined;
+
+    for (const a of attempts) {
+      try {
+        const raw: unknown = await this.client.request({
+          method: 'GET',
+          url: a.url,
+          params: a.params,
+          validateStatus: () => true,
+        });
+
+        if (typeof raw === 'string') {
+          lastNonJson = raw.trim().slice(0, 120);
+          continue;
+        }
+        if (!isRecord(raw)) {
+          continue;
+        }
+
+        const envelope = unwrapLarkHttpResponse(raw);
+        const listCode = envelope
+          ? readFeishuEnvelopeCode(envelope)
+          : undefined;
+        if (listCode !== undefined && listCode !== 0) {
+          const msg = envelope
+            ? readOptionalString(envelope['msg'])
+            : undefined;
+          this.logger.warn(
+            `列出幻灯片页失败 [${a.label}]: presentation_id=${presentationId} code=${listCode} msg=${msg ?? 'unknown'}`,
+          );
+          continue;
+        }
+
+        let ids: string[] = [];
+        try {
+          ids = parseListSlideIdsResponse(raw);
+        } catch (parseErr) {
+          this.logger.warn(
+            `解析幻灯片列表响应失败 [${a.label}]: ${(parseErr as Error).message}`,
+          );
+          continue;
+        }
+
+        if (ids.length > 0) {
+          this.logger.log(
+            `📑 已通过列表接口 [${a.label}] 解析 ${ids.length} 个 slide_id`,
+          );
+          return ids;
+        }
+      } catch (e) {
+        this.logger.warn(
+          `请求幻灯片列表失败 [${a.label}]: ${presentationId} — ${(e as Error).message}`,
         );
       }
     }
 
-    return parseListSlideIdsResponse(raw);
+    const hint =
+      lastNonJson !== undefined ? `（末次非 JSON：${lastNonJson}）` : '';
+    this.logger.warn(
+      `GET 幻灯片列表多路径均未返回可用页面: ${presentationId}${hint}`,
+    );
+    return [];
+  }
+
+  /** GET 演示文稿元数据请求已成功（业务 code=0），而非网络层错误或业务报错。 */
+  private isSuccessfulPresentationMetaFetch(raw: unknown): boolean {
+    const envelope = unwrapLarkHttpResponse(raw);
+    if (!envelope) return false;
+    const code = readFeishuEnvelopeCode(envelope);
+    return code === undefined || code === 0;
+  }
+
+  /**
+   * 依次：GET 单演示文稿元数据（失败则立即再试，不睡眠退避）；
+   * 若已成功返回但 slides 仍为空则立刻 POST 新建第一页；必要时再走 legacy .../pages 列表兜底。
+   */
+  private async resolvePresentationSlideIds(
+    presentationId: string,
+  ): Promise<string[]> {
+    const maxAttempts = this.presentationMetaFetchMaxAttempts();
+    let lastMetaErr: unknown;
+    let lastRawMeta: unknown;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        if (!this.client) {
+          throw new Error('飞书客户端未初始化');
+        }
+        const rawMeta: unknown = await this.client.request({
+          method: 'GET',
+          url: this.presentationResourceUrl(presentationId),
+          validateStatus: () => true,
+        });
+        lastRawMeta = rawMeta;
+        const ids = this.trySlideIdsFromPresentationEnvelope(
+          rawMeta,
+          presentationId,
+        );
+        if (ids.length > 0) {
+          return ids;
+        }
+        if (this.isSuccessfulPresentationMetaFetch(rawMeta)) {
+          const revisionHint = readRevisionIdFromPresentationEnvelope(rawMeta);
+          const created = await this.createPage(presentationId, revisionHint);
+          if (created) {
+            return [created];
+          }
+          break;
+        }
+      } catch (e) {
+        lastMetaErr = e;
+        if (i < maxAttempts - 1) {
+          this.logger.warn(
+            `获取演示文稿元数据失败，将重试 (${i + 1}/${maxAttempts}): ${presentationId} — ${(e as Error).message}`,
+          );
+        }
+      }
+    }
+
+    if (lastRawMeta !== undefined) {
+      this.logPresentationMetadataWithoutSlides(presentationId, lastRawMeta);
+    }
+
+    if (lastMetaErr) {
+      const metaErrMsg =
+        lastMetaErr instanceof Error
+          ? lastMetaErr.message
+          : typeof lastMetaErr === 'string'
+            ? lastMetaErr
+            : JSON.stringify(lastMetaErr);
+      this.logger.warn(
+        `多次 GET 演示文稿仍未解析到 slide_id: ${presentationId} — ${metaErrMsg}`,
+      );
+    }
+
+    if (this.shouldTryLegacyListSlidesFallback()) {
+      const revisionId = readRevisionIdFromPresentationEnvelope(lastRawMeta);
+      const fromList = await this.fetchSlideIdsFromLegacyListPath(
+        presentationId,
+        revisionId,
+      );
+      if (fromList.length > 0) {
+        return fromList;
+      }
+    }
+
+    return [];
+  }
+
+  /**
+   * 从「获取演示文稿」或「创建演示文稿」类响应中解析 slide_id（与 parsePresentationCreateSlideIds 同源结构）。
+   */
+  private trySlideIdsFromPresentationEnvelope(
+    raw: unknown,
+    presentationId?: string,
+  ): string[] {
+    if (typeof raw === 'string') {
+      return [];
+    }
+    if (!isRecord(raw)) {
+      return [];
+    }
+    const code = readFeishuEnvelopeCode(raw);
+    if (code !== undefined && code !== 0) {
+      const msg = readOptionalString(raw['msg']) ?? 'unknown';
+      this.logger.warn(
+        `获取演示文稿返回错误码，跳过解析 slide_id（presentation_id=${presentationId ?? '?'}）: ${code} ${msg}`,
+      );
+      return [];
+    }
+    return parsePresentationCreateSlideIds(raw, presentationId);
+  }
+
+  /** 便于对照线网真实响应形状排查权限/字段变更（不包含正文）。 */
+  private logPresentationMetadataWithoutSlides(
+    presentationId: string,
+    raw: unknown,
+  ): void {
+    const envelope = unwrapLarkHttpResponse(raw);
+    if (!envelope) {
+      this.logger.warn(
+        `GET 演示文稿返回非 JSON 对象，无法解析 slide_id: ${presentationId}`,
+      );
+      return;
+    }
+    const code = readFeishuEnvelopeCode(envelope);
+    const msg = readOptionalString(envelope['msg']);
+    const data = envelope['data'];
+    const dataKeys = isRecord(data) ? Object.keys(data).join(',') : typeof data;
+    let presentationKeys = '';
+    let slidesBranch = 'n/a';
+    if (isRecord(data) && isRecord(data['presentation'])) {
+      const pres = data['presentation'];
+      presentationKeys = Object.keys(pres).join(',');
+      slidesBranch = summarizeSlidesBranchForLog(pres['slides']);
+    }
+    this.logger.warn(
+      `演示文稿元数据解析 slide_id 为空（${presentationId}）code=${code ?? 'n/a'} msg=${msg ?? 'n/a'} dataKeys=[${dataKeys}] presentationKeys=[${presentationKeys}] slidesBranch=${slidesBranch}`,
+    );
   }
 
   /**
    * 列出演示文稿中的幻灯片页 ID（用于向指定页追加块）。
-   * @see https://open.feishu.cn/document/server-docs/docs/slides-v1/slide/list
+   * 依赖 GET /presentations/:id；必要时从 layouts/masters 子树启发式采集，
+   * 并依次尝试 revisions/:revision_id/pages、pages?revision_id、pages（可用环境变量关闭列表兜底）。
    */
   async listSlideIds(presentationId: string): Promise<string[]> {
-    const ids = await this.fetchPresentationSlideIds(presentationId);
+    const ids = await this.resolvePresentationSlideIds(presentationId);
     this.logger.log(`📑 演示文稿 ${presentationId} 共 ${ids.length} 页`);
     return ids;
+  }
+
+  /**
+   * 在演示文稿下新建一页。
+   * 新建页须 `POST .../presentations/:id/pages`（或带 revision 的等价路径）；勿使用 `/slides` 后缀。
+   * @returns 新页的 slide_id；失败或响应无法解析时返回 undefined。
+   */
+  private async createPage(
+    presentationId: string,
+    revisionId?: string,
+  ): Promise<string | undefined> {
+    if (!this.client) {
+      throw new Error('飞书客户端未初始化');
+    }
+    const base = this.presentationResourceUrl(presentationId);
+    const rev = readIdLikeString(revisionId);
+    const attempts: Array<{
+      label: string;
+      url: string;
+      params?: Record<string, unknown>;
+      data?: Record<string, unknown>;
+    }> = [];
+    if (rev) {
+      attempts.push({
+        label: 'revisions/.../pages',
+        url: `${base}/revisions/${encodeURIComponent(rev)}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+        data: {},
+      });
+      attempts.push({
+        label: 'pages?revision_id',
+        url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+        params: { revision_id: rev },
+        data: {},
+      });
+      if (/^\d+$/.test(rev)) {
+        attempts.push({
+          label: 'pages JSON revision_id(number)',
+          url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+          data: { revision_id: Number(rev) },
+        });
+      } else {
+        attempts.push({
+          label: 'pages JSON revision_id(string)',
+          url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+          data: { revision_id: rev },
+        });
+      }
+    }
+    attempts.push({
+      label: 'pages',
+      url: `${base}/${LarkSlidesService.PRESENTATION_PAGES_RESOURCE}`,
+      data: {},
+    });
+
+    const failures: string[] = [];
+    const jsonHeaders = {
+      'Content-Type': 'application/json; charset=utf-8',
+    };
+
+    for (const a of attempts) {
+      let raw: unknown;
+      try {
+        raw = await this.client.request({
+          method: 'POST',
+          url: a.url,
+          data: a.data ?? {},
+          params: a.params,
+          headers: jsonHeaders,
+          validateStatus: () => true,
+        });
+      } catch (e) {
+        failures.push(`${a.label}: ${(e as Error).message}`);
+        continue;
+      }
+      const transportBad = describeSlideCreateTransportFailure(raw);
+      if (transportBad !== undefined) {
+        failures.push(`${a.label}: ${transportBad}`);
+        continue;
+      }
+      const envelope = unwrapLarkHttpResponse(raw);
+      const code = envelope ? readFeishuEnvelopeCode(envelope) : undefined;
+      if (code !== undefined && code !== 0) {
+        const msg = envelope ? readOptionalString(envelope['msg']) : undefined;
+        failures.push(`${a.label}: code=${code} msg=${msg ?? 'unknown'}`);
+        continue;
+      }
+      const ids = parsePresentationCreateSlideIds(raw, presentationId);
+      const id = ids[0];
+      if (!id) {
+        failures.push(`${a.label}: 成功响应但未解析到 slide_id`);
+        continue;
+      }
+      if (a.label !== 'pages') {
+        this.logger.log(
+          `📄 已新建幻灯片页 [${a.label}]: ${presentationId} slide_id=${id}`,
+        );
+      } else {
+        this.logger.log(`📄 已新建幻灯片页: ${presentationId} slide_id=${id}`);
+      }
+      return id;
+    }
+
+    if (failures.length > 0) {
+      const joined = failures.join('; ');
+      const allGateway404 =
+        failures.length > 0 &&
+        failures.every((f) => f.includes('404 page not found'));
+      const hint = allGateway404
+        ? ' （全部为网关 404 时：多在开放平台检查「幻灯片」读写权限；仅用 tenant_access_token 可能无法访问 .../pages 写接口，需 user_access_token 或文档标注的其它凭证。）'
+        : '';
+      this.logger.warn(
+        `创建幻灯片页全部尝试失败: ${presentationId} — ${joined}${hint}`,
+      );
+    } else {
+      this.logger.warn(`创建幻灯片页全部尝试失败: ${presentationId}`);
+    }
+    return undefined;
   }
 
   /**
@@ -276,15 +1134,35 @@ export class LarkSlidesService {
   }
 
   /**
-   * 将 Markdown 同步到演示文稿的第一页（新建演示默认至少有一页）。
+   * 将 Markdown 同步到演示文稿的第一页；若列表为空会先尝试新建一页再写入。
    * @returns 写入的块 ID 列表；若无法解析到页面则返回 null。
    */
   async appendMarkdownToFirstSlide(
     presentationId: string,
     markdown: string,
+    preferredFirstSlideId?: string,
   ): Promise<string[] | null> {
-    const slideIds = await this.listSlideIds(presentationId);
-    const firstSlideId = slideIds[0];
+    const hinted = readOptionalString(preferredFirstSlideId);
+    let slideIds: string[] = [];
+    if (!hinted) {
+      try {
+        slideIds = await this.listSlideIds(presentationId);
+      } catch (e) {
+        this.logger.warn(
+          `列出幻灯片页失败，无法写入 Markdown: ${presentationId} — ${(e as Error).message}`,
+        );
+        return null;
+      }
+      if (slideIds.length === 0) {
+        const revisionHint =
+          await this.fetchPresentationRevisionHint(presentationId);
+        const createdId = await this.createPage(presentationId, revisionHint);
+        if (createdId) {
+          slideIds = [createdId];
+        }
+      }
+    }
+    const firstSlideId = hinted ?? slideIds[0];
     if (!firstSlideId) {
       this.logger.warn(
         `演示文稿 ${presentationId} 未返回任何 slide_id，无法写入幻灯片内容`,

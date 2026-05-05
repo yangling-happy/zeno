@@ -31,6 +31,11 @@ export interface SlidesCreationResult {
   presentationId: string;
   url: string;
   pages: SlidePage[];
+  /**
+   * 若「创建演示文稿」响应中带出首页 slide_id，可直接写入块而无需调用
+   * 「列出演示文稿页面」（部分环境下该列表路由会对网关返回 404）。
+   */
+  firstSlideId?: string;
 }
 
 export interface SlideTextStyle {

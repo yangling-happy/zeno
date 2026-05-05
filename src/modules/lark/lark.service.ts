@@ -70,6 +70,7 @@ interface LarkSlidesWriter {
   appendMarkdownToFirstSlide(
     presentationId: string,
     markdown: string,
+    preferredFirstSlideId?: string,
   ): Promise<string[] | null>;
 }
 
@@ -481,6 +482,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
                 await slidesWriter.appendMarkdownToFirstSlide(
                   present.presentationId,
                   contentToWrite,
+                  present.firstSlideId,
                 );
               if (slideBlockIds !== null) {
                 this.logger.log(
