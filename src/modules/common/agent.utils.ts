@@ -151,6 +151,14 @@ export function checkRateLimit(
   return true;
 }
 
+export { shouldAppendToLastLarkDoc } from './lark-doc-append.utils';
+export {
+  collectStringsDeepFromLarkContent,
+  compactLarkDocAppendInstruction,
+  extractFirstFeishuDocToken,
+  mergeVisibleAndLarkJsonForDocOps,
+} from './lark-feishu-doc.utils';
+
 /**
  * 构建响应对象
  * @param response 响应文本

@@ -12,7 +12,14 @@ import { ActionInstruction } from '../agent/agent.types';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
+import { mergeVisibleAndLarkJsonForDocOps } from '../common/lark-doc-haystack.utils';
+import {
+  compactLarkDocAppendInstruction,
+  extractFirstFeishuDocToken,
+} from '../common/lark-feishu-doc.utils';
+import { shouldAppendToLastLarkDoc } from '../common/lark-doc-append.utils';
 import { MemoryService } from '../memory/memory.service';
+import { SessionService } from '../agent/session/session.service';
 
 export interface LarkWebhookMessage {
   chat_id?: string;
@@ -86,6 +93,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     private readonly agentService: AgentService,
     private readonly instructionDetector: InstructionDetectorService,
     private readonly memoryService: MemoryService,
+    private readonly sessionService: SessionService,
     private readonly docService: LarkDocService,
     private readonly slidesService: LarkSlidesService,
     private readonly broadService: LarkBroadService,
@@ -268,14 +276,63 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         text,
       );
 
-      this.logger.log(`🤖 调用 Agent 服务处理消息`);
       const priorContext = this.userContextMap.get(userId);
+      const trimmedText = text.trim();
+      const docHaystack = mergeVisibleAndLarkJsonForDocOps(
+        text,
+        message.content,
+      );
+      const docTokenFromMessage = extractFirstFeishuDocToken(docHaystack);
+      const effectiveDocId =
+        priorContext?.lastDocId?.trim() || docTokenFromMessage;
+
+      if (
+        effectiveDocId &&
+        shouldAppendToLastLarkDoc(docHaystack, effectiveDocId)
+      ) {
+        this.logger.log(
+          docTokenFromMessage && !priorContext?.lastDocId?.trim()
+            ? '📌 从消息内解析云文档 token，延续追加（内存无 lastDocId，常见于粘贴机器人回复或实例重启后）'
+            : '📌 延续云文档追加：跳过意图分类，直达飞书写入（避免交付等场景误判与模型编造链接）',
+        );
+        const docId = effectiveDocId.trim();
+        const instructionForAppend =
+          compactLarkDocAppendInstruction(docHaystack) || trimmedText;
+        this.sessionService.addMessage(userId, 'user', text);
+        const appendAction: ActionInstruction = {
+          type: 'LARK_DOC_APPEND',
+          params: { documentId: docId, text: instructionForAppend },
+        };
+        const actionResult = await this.executeActionInstruction(appendAction);
+        const replyText = actionResult
+          ? `已按你的说明将内容追加到上一篇云文档。\n\n${actionResult}`
+          : '已尝试追加云文档，但未获得执行结果（请确认飞书长连接与 API 已正确配置）。';
+
+        this.sessionService.addMessage(userId, 'assistant', replyText);
+
+        const ctx = this.userContextMap.get(userId) || {};
+        ctx.lastDocId = docId;
+        this.userContextMap.set(userId, ctx);
+
+        await this.sendLarkReplyAndPersistAssistant(
+          message,
+          senderOpenId,
+          userId,
+          replyText,
+          'SCENE_DOC',
+        );
+        return;
+      }
+
+      this.logger.log(`🤖 调用 Agent 服务处理消息`);
       const result = await this.agentService.run({
         text,
         userId,
         channel: 'lark',
         memoryContext,
-        lastDocId: priorContext?.lastDocId,
+        lastDocId:
+          priorContext?.lastDocId?.trim() ||
+          extractFirstFeishuDocToken(docHaystack),
       });
       this.logger.log(
         `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
@@ -362,43 +419,12 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      // 即使没有 open_id，也可以通过 message_id 回复消息
-      if (!senderOpenId && !message.message_id) {
-        this.logger.warn('⚠️ 缺少 open_id 和 message_id，无法发送卡片');
-        return;
-      }
-
-      this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
-      this.logger.log(`💬 准备发送卡片: ${message.message_id || 'unknown'}`);
-
-      // 优先使用 reply 方法回复消息，这样可以保持消息的上下文关系
-      if (message.message_id) {
-        this.logger.log(`📢 使用 reply 方法回复消息: ${message.message_id}`);
-        await this.reply(message.message_id, replyText);
-      } else if (message.chat_id) {
-        // 如果没有 message_id，则使用 sendCardToChat 方法发送到群聊
-        this.logger.log(`📢 消息来自群聊，发送到群聊: ${message.chat_id}`);
-        await this.sendCardToChat(message.chat_id, {
-          message: replyText,
-        });
-      } else if (senderOpenId) {
-        // 如果没有 message_id 和 chat_id，则使用 sendCardToUser 方法发送到私聊
-        this.logger.log(`💬 消息来自私聊，发送到私聊: ${senderOpenId}`);
-        await this.sendCardToUser(senderOpenId, {
-          message: replyText,
-        });
-      }
-
-      this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
-
-      await this.memoryService.addConversationTurn(
+      await this.sendLarkReplyAndPersistAssistant(
+        message,
+        senderOpenId,
         userId,
-        'assistant',
         replyText,
-        {
-          messageId: message.message_id,
-          intent: result.intent,
-        },
+        result.intent,
       );
     } catch (error) {
       if (message.message_id) {
@@ -407,6 +433,50 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       }
       this.logger.error('❌ 处理飞书消息失败:', error);
     }
+  }
+
+  /** 发送回复并写入 assistant 轮次（含记忆 intent） */
+  private async sendLarkReplyAndPersistAssistant(
+    message: LarkWebhookMessage,
+    senderOpenId: string | undefined,
+    userId: string,
+    replyText: string,
+    intentForMemory: string,
+  ): Promise<void> {
+    if (!senderOpenId && !message.message_id) {
+      this.logger.warn('⚠️ 缺少 open_id 和 message_id，无法发送卡片');
+      return;
+    }
+
+    this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
+    this.logger.log(`💬 准备发送卡片: ${message.message_id || 'unknown'}`);
+
+    if (message.message_id) {
+      this.logger.log(`📢 使用 reply 方法回复消息: ${message.message_id}`);
+      await this.reply(message.message_id, replyText);
+    } else if (message.chat_id) {
+      this.logger.log(`📢 消息来自群聊，发送到群聊: ${message.chat_id}`);
+      await this.sendCardToChat(message.chat_id, {
+        message: replyText,
+      });
+    } else if (senderOpenId) {
+      this.logger.log(`💬 消息来自私聊，发送到私聊: ${senderOpenId}`);
+      await this.sendCardToUser(senderOpenId, {
+        message: replyText,
+      });
+    }
+
+    this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
+
+    await this.memoryService.addConversationTurn(
+      userId,
+      'assistant',
+      replyText,
+      {
+        messageId: message.message_id,
+        intent: intentForMemory,
+      },
+    );
   }
 
   private extractDocIdFromActionResult(actionResult: string): string | null {

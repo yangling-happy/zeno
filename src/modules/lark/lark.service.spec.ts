@@ -7,6 +7,7 @@ import { LarkDocService } from './doc/lark-doc.service';
 import { LarkService } from './lark.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { MemoryService } from '../memory/memory.service';
+import { SessionService } from '../agent/session/session.service';
 
 const memoryServiceMock = {
   addConversationTurn: jest.fn().mockResolvedValue(1),
@@ -115,6 +116,10 @@ describe('LarkService', () => {
           useValue: memoryServiceMock,
         },
         {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
+        },
+        {
           provide: LarkDocService,
           useValue: {
             initClient: jest.fn(),
@@ -185,6 +190,10 @@ describe('LarkService', () => {
         {
           provide: MemoryService,
           useValue: memoryServiceMock,
+        },
+        {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
         },
         {
           provide: LarkDocService,
@@ -305,6 +314,10 @@ describe('LarkService', () => {
           useValue: memoryServiceMock,
         },
         {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
+        },
+        {
           provide: LarkDocService,
           useValue: {
             initClient: jest.fn(),
@@ -379,6 +392,10 @@ describe('LarkService', () => {
           useValue: memoryServiceMock,
         },
         {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
+        },
+        {
           provide: LarkDocService,
           useValue: {
             initClient: jest.fn(),
@@ -440,6 +457,10 @@ describe('LarkService', () => {
         {
           provide: MemoryService,
           useValue: memoryServiceMock,
+        },
+        {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
         },
         {
           provide: LarkDocService,
@@ -522,6 +543,10 @@ describe('LarkService', () => {
         {
           provide: MemoryService,
           useValue: memoryServiceMock,
+        },
+        {
+          provide: SessionService,
+          useValue: { addMessage: jest.fn() },
         },
         {
           provide: LarkDocService,
