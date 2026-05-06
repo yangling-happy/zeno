@@ -72,6 +72,8 @@ export interface AgentRunInput {
   text: string;
   userId?: string;
   channel?: string;
+  /** 渠道侧最近创建/操作的云文档 ID，用于「在文末追加」等延续请求 */
+  lastDocId?: string;
   memoryContext?: {
     recentConversations: Array<{
       role: 'user' | 'assistant';
@@ -100,6 +102,14 @@ export type ActionInstruction =
       params: {
         title: string;
         summary?: string;
+      };
+    }
+  | {
+      type: 'LARK_DOC_APPEND';
+      params: {
+        documentId: string;
+        /** 用户原文意图，下游将生成 Markdown 后追加 */
+        text: string;
       };
     }
   | {

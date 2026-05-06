@@ -8,6 +8,14 @@ import {
 import { isLikelyActionRequest } from '../../common/agent.utils';
 import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from '../intent/explicit-board-pattern';
 
+/** 用户明显要新建另一篇文档，应忽略 lastDocId 延续 */
+const EXPLICIT_NEW_DOC_RE =
+  /新建|另起|重新(?:写|创建|生成)|再写(?:一)?篇|写一篇新|新开(?:一)?篇|创建(?:一)?个(?:新)?文档|单独(?:再)?要(?:一)?(?:篇|份)|从零(?:开始)?写/i;
+
+/** 相对上一轮文档做追加、补充、续写 */
+const DOC_APPEND_HINT_RE =
+  /(?:文末|末尾|结尾|最后|后面|接着|续写|续上|追加|补充|加入|添加|加上|写入|粘贴|填到|粘到|完善|润色|更新|在(?:那)?篇|在文章|在文档|在正文|在(?:上面|刚才|这篇|这份)|这篇|这份|这个文档|刚才|之前|刚生成|刚创建|上面(?:那)?个文档)/i;
+
 @Injectable()
 export class AgentToolService {
   private readonly logger = new Logger(AgentToolService.name);
@@ -67,11 +75,27 @@ export class AgentToolService {
     return undefined;
   }
 
+  /** 在已有 lastDocId 时，是否应追加而非新建 */
+  shouldAppendToLastDocument(
+    normalizedText: string,
+    lastDocId: string | undefined,
+  ): boolean {
+    const t = normalizedText.trim();
+    if (!lastDocId || !t) {
+      return false;
+    }
+    if (EXPLICIT_NEW_DOC_RE.test(t)) {
+      return false;
+    }
+    return DOC_APPEND_HINT_RE.test(t);
+  }
+
   buildActionInstruction(
     intent: IntentType,
     params: Record<string, any> | undefined,
     normalizedText: string,
     confidence?: number,
+    options?: { lastDocId?: string },
   ): ActionInstruction {
     const CONFIDENCE_THRESHOLD = 0.6;
     const isHighConfidence =
@@ -93,6 +117,17 @@ export class AgentToolService {
         : `Zeno 演示-${new Date().toLocaleString('zh-CN')}`;
 
     if (intent === 'SCENE_DOC') {
+      const lastId = options?.lastDocId?.trim();
+      if (lastId && this.shouldAppendToLastDocument(normalizedText, lastId)) {
+        return {
+          type: 'LARK_DOC_APPEND',
+          params: {
+            documentId: lastId,
+            text: normalizedText,
+          },
+        };
+      }
+
       const summaryContent =
         typeof params?.summary === 'string' && params.summary.trim().length > 0
           ? params.summary.trim()
@@ -174,6 +209,7 @@ export class AgentToolService {
   buildActionInstructionFromSkillPlan(
     plan: SkillExecutionPlan | undefined,
     normalizedText: string,
+    options?: { lastDocId?: string },
   ): ActionInstruction {
     if (!plan) {
       return { type: 'NONE' };
@@ -186,6 +222,7 @@ export class AgentToolService {
       primary.parameters,
       normalizedText,
       primary.confidence,
+      options,
     );
   }
 }

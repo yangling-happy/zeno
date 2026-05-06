@@ -76,4 +76,32 @@ describe('AgentToolService', () => {
       expect(action.params.whiteboardId).toBe('wb_demo_token');
     }
   });
+
+  it('should append to last doc when user asks to add at end and lastDocId is set', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_DOC',
+      { docTitle: '测试', summary: '占位' },
+      '在文章末尾加入一小段总结',
+      0.9,
+      { lastDocId: 'doc_prev_abc' },
+    );
+
+    expect(action.type).toBe('LARK_DOC_APPEND');
+    if (action.type === 'LARK_DOC_APPEND') {
+      expect(action.params.documentId).toBe('doc_prev_abc');
+      expect(action.params.text).toContain('末尾');
+    }
+  });
+
+  it('should create new doc when user explicitly asks for a new document despite lastDocId', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_DOC',
+      {},
+      '帮我重新写一篇关于验收的文档',
+      0.9,
+      { lastDocId: 'doc_prev_abc' },
+    );
+
+    expect(action.type).toBe('LARK_DOC_CREATE');
+  });
 });

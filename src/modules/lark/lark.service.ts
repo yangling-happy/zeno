@@ -269,11 +269,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       );
 
       this.logger.log(`🤖 调用 Agent 服务处理消息`);
+      const priorContext = this.userContextMap.get(userId);
       const result = await this.agentService.run({
         text,
         userId,
         channel: 'lark',
         memoryContext,
+        lastDocId: priorContext?.lastDocId,
       });
       this.logger.log(
         `🧭 意图识别结果: ${result.intent} (${result.confidence.toFixed(2)})`,
@@ -300,36 +302,38 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
           const docId = this.extractDocIdFromActionResult(actionResult);
           if (docId) {
-            const userId = message.open_id || 'anonymous';
             const context = this.userContextMap.get(userId) || {};
             context.lastDocId = docId;
             this.userContextMap.set(userId, context);
           }
         }
 
+        if (result.actionInstruction.type === 'LARK_DOC_APPEND') {
+          const context = this.userContextMap.get(userId) || {};
+          context.lastDocId = result.actionInstruction.params.documentId.trim();
+          this.userContextMap.set(userId, context);
+        }
+
         if (result.actionInstruction.type === 'LARK_BOARD_CREATE') {
           const wbId = this.extractWhiteboardIdFromActionResult(actionResult);
           if (wbId) {
-            const uid = message.open_id || 'anonymous';
-            const context = this.userContextMap.get(uid) || {};
+            const context = this.userContextMap.get(userId) || {};
             context.lastWhiteboardId = wbId;
-            this.userContextMap.set(uid, context);
+            this.userContextMap.set(userId, context);
           }
         }
 
         if (result.actionInstruction.type === 'LARK_WHITEBOARD_APPEND') {
-          const uid = message.open_id || 'anonymous';
-          const context = this.userContextMap.get(uid) || {};
+          const context = this.userContextMap.get(userId) || {};
           context.lastWhiteboardId =
             result.actionInstruction.params.whiteboardId.trim();
-          this.userContextMap.set(uid, context);
+          this.userContextMap.set(userId, context);
         }
       } else if (result.actionInstruction?.type === 'NONE') {
         const isInstruction =
           await this.instructionDetector.isInstruction(text);
         if (isInstruction) {
           this.logger.log(`🤖 检测到指令，正在处理: ${text}`);
-          const userId = message.open_id || 'anonymous';
           const context = this.userContextMap.get(userId);
           const generatedContent =
             await this.instructionDetector.processInstruction(
@@ -463,6 +467,21 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
             );
           }
           return `📄 文档已创建：${docUrl}`;
+        }
+
+        case 'LARK_DOC_APPEND': {
+          const documentId = action.params.documentId.trim();
+          const generatedContent =
+            await this.instructionDetector.processInstruction(
+              action.params.text,
+              `用户正在操作的文档ID: ${documentId}`,
+            );
+          const docResult = await this.docService.appendMarkdownToDocument(
+            documentId,
+            generatedContent,
+          );
+          const docUrl = `https://feishu.cn/docx/${documentId}`;
+          return `📄 已追加到文档：${docUrl}\n（共添加 ${docResult.blockIds.length} 个内容块）`;
         }
 
         case 'LARK_PRESENT_CREATE': {

@@ -120,19 +120,31 @@ export class AgentGraphService {
           this.agentToolService.buildActionInstructionFromSkillPlan(
             state.skillExecutionPlan,
             state.normalizedText,
+            { lastDocId: state.userInput.lastDocId },
           );
         const skillId = state.skillExecutionPlan?.primarySkill.skillId;
+        const isAppend = actionInstruction.type === 'LARK_DOC_APPEND';
         const responseText =
           await this.sceneReplyService.generateSceneUserReply(state, {
             sceneLabel: '文档协作（SCENE_DOC）',
-            contextItems: [
-              skillId ? `命中技能：${skillId}` : '文档类协作流程。',
-              '系统将创建文档并在会话中返回可访问链接（由下游动作生成，非本段文案虚构）。',
-            ],
-            constraints: [
-              '明确告知用户：会创建文档并在会话中回传链接；不得写出具体 URL 或文档 ID，除非用户原文已提供。',
-              '不要承诺超出「创建并交付入口」以外的业务结果。',
-            ],
+            contextItems: isAppend
+              ? [
+                  skillId ? `命中技能：${skillId}` : '文档类协作流程。',
+                  '用户请求为在已有云文档中追加内容；系统将在下游向该文档写入，并回传可访问链接（由动作结果生成，非本段文案虚构）。',
+                ]
+              : [
+                  skillId ? `命中技能：${skillId}` : '文档类协作流程。',
+                  '系统将创建文档并在会话中返回可访问链接（由下游动作生成，非本段文案虚构）。',
+                ],
+            constraints: isAppend
+              ? [
+                  '明确说明：内容会追加到用户当前会话中最近使用的云文档，而不是新建另一篇；不得写出具体 URL 或文档 ID，除非用户原文已提供。',
+                  '不要承诺「已读取全文」等需要实际拉取文档才成立的结果，除非用户已提供原文。',
+                ]
+              : [
+                  '明确告知用户：会创建文档并在会话中回传链接；不得写出具体 URL 或文档 ID，除非用户原文已提供。',
+                  '不要承诺超出「创建并交付入口」以外的业务结果。',
+                ],
           });
         const response = buildResponse(responseText, actionInstruction);
         return updateStateWithTrace(state, response, 'doc_node');
