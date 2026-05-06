@@ -19,6 +19,7 @@ import {
   IntentSchema,
   type IntentClassification,
 } from './zod/agent-zod.schema';
+import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from './intent/explicit-board-pattern';
 import {
   buildSkillPromptContext,
   getSkillByIntent,
@@ -40,6 +41,13 @@ function formatPlannerGoalSummary(
     return String(goal);
   return JSON.stringify(goal);
 }
+
+/** 结构化场景回复：由 LLM 生成措辞，任务事实与产品约束由调用方注入，避免硬编码话术。 */
+type SceneReplyArgs = {
+  sceneLabel: string;
+  contextItems: string[];
+  constraints: string[];
+};
 
 const AgentGraphState = Annotation.Root({
   userInput: Annotation<AgentRunInput>,
@@ -220,6 +228,58 @@ export class AgentService {
     );
   }
 
+  private formatPersonaBlock(persona: PersonaProfile): string {
+    return [
+      `你是 ${persona.name}，身份是 ${persona.role}。`,
+      `语气与风格：${persona.tone}。`,
+      `表达规则：${persona.styleRules.join('；')}。`,
+      `边界（不得违反）：${persona.boundaries.join('；')}。`,
+    ].join('\n');
+  }
+
+  private formatRecentDialogueSnippet(
+    sessionHistory: GraphState['sessionHistory'],
+    maxTurns = 4,
+  ): string {
+    if (!sessionHistory?.length) return '';
+    return sessionHistory
+      .slice(-maxTurns)
+      .map((m) => `${m.role}: ${m.content}`)
+      .join('\n');
+  }
+
+  /**
+   * 路由节点的用户可见回复：Context = 任务事实与识别结果；Constraints = 语气、合规与产品规则。
+   */
+  private async generateSceneUserReply(
+    state: GraphState,
+    args: SceneReplyArgs,
+  ): Promise<string> {
+    const dialogue = this.formatRecentDialogueSnippet(state.sessionHistory);
+    const sections: string[] = [
+      this.formatPersonaBlock(state.persona),
+      '',
+      `【路由场景】${args.sceneLabel}`,
+      '',
+      '【任务上下文】',
+      ...args.contextItems.map((line) => `- ${line}`),
+    ];
+    if (dialogue) {
+      sections.push('', '【最近对话（仅用于衔接语气，勿冗长复述）】', dialogue);
+    }
+    sections.push(
+      '',
+      '【你必须遵守的约束】',
+      ...args.constraints.map((line) => `- ${line}`),
+      '',
+      '【用户本轮输入】',
+      state.normalizedText,
+      '',
+      '请只输出给用户看的正文（自然中文）。不要输出 JSON、不要用 Markdown 一级标题、不要暴露内部字段名或英文路由标识。',
+    );
+    return this.aiService.chat(sections.join('\n'));
+  }
+
   private getOrCreateGraph() {
     if (this.compiledGraph) return this.compiledGraph;
 
@@ -254,49 +314,102 @@ export class AgentService {
         );
       })
       // 场景 B: 任务规划节点
-      .addNode('planner_node', (state) => {
-        const response = buildResponse(
-          `[场景B: 任务规划] 我已理解您的意图：${formatPlannerGoalSummary(state.params)}。正在为您拆解步骤...`,
-        );
+      .addNode('planner_node', async (state) => {
+        const responseText = await this.generateSceneUserReply(state, {
+          sceneLabel: '任务规划（SCENE_PLAN）',
+          contextItems: [
+            `规划目标摘要：${formatPlannerGoalSummary(state.params)}`,
+            `意图置信度：${state.confidence}`,
+          ],
+          constraints: [
+            '先简要确认用户要达成的目标或任务类型，再说明系统正在拆解执行步骤。',
+            '不得编造尚未发生的步骤细节或具体产物（正文、文件名、链接等）。',
+            '篇幅控制在 2～5 句话，专业、可执行导向。',
+          ],
+        });
+        const response = buildResponse(responseText);
         return updateStateWithTrace(state, response, 'planner_node');
       })
       // 场景 E: 多端同步节点
-      .addNode('sync_node', (state) => {
-        const response = buildResponse(
-          `[场景E: 多端同步] 正在将数据从 ${state.userInput.channel || '未知设备'} 同步至另一端...`,
-        );
+      .addNode('sync_node', async (state) => {
+        const channel = state.userInput.channel?.trim();
+        const responseText = await this.generateSceneUserReply(state, {
+          sceneLabel: '多端同步（SCENE_SYNC）',
+          contextItems: [
+            channel
+              ? `当前渠道/来源标识：${channel}`
+              : '用户未指定渠道/设备侧信息。',
+          ],
+          constraints: [
+            '说明同步任务已纳入处理或正在进行，不要声称已经全程完成（除非用户语境仅为咨询已完成状态）。',
+            '若渠道未知，礼貌说明并引导用户补充来源端与目标端，而非编造设备名。',
+            '篇幅 2～4 句话。',
+          ],
+        });
+        const response = buildResponse(responseText);
         return updateStateWithTrace(state, response, 'sync_node');
       })
       // 场景 C: 文档节点
-      .addNode('doc_node', (state) => {
+      .addNode('doc_node', async (state) => {
         const actionInstruction =
           this.agentToolService.buildActionInstructionFromSkillPlan(
             state.skillExecutionPlan,
             state.normalizedText,
           );
-        const response = buildResponse(
-          '已识别为文档协作请求，我会创建文档并在会话中回传链接。',
-          actionInstruction,
-        );
+        const skillId = state.skillExecutionPlan?.primarySkill.skillId;
+        const responseText = await this.generateSceneUserReply(state, {
+          sceneLabel: '文档协作（SCENE_DOC）',
+          contextItems: [
+            skillId ? `命中技能：${skillId}` : '文档类协作流程。',
+            '系统将创建文档并在会话中返回可访问链接（由下游动作生成，非本段文案虚构）。',
+          ],
+          constraints: [
+            '明确告知用户：会创建文档并在会话中回传链接；不得写出具体 URL 或文档 ID，除非用户原文已提供。',
+            '不要承诺超出「创建并交付入口」以外的业务结果。',
+          ],
+        });
+        const response = buildResponse(responseText, actionInstruction);
         return updateStateWithTrace(state, response, 'doc_node');
       })
       // 场景 D: 演示/画布节点
-      .addNode('present_node', (state) => {
+      .addNode('present_node', async (state) => {
         const actionInstruction =
           this.agentToolService.buildActionInstructionFromSkillPlan(
             state.skillExecutionPlan,
             state.normalizedText,
           );
-        const response = buildResponse(
-          '已识别为演示/画布请求：创建画板时会生成「正文文档」与「画板」两条独立链接；正文只写入文档，画板为空白画布可手绘，避免两处重复铺字叠在一起。',
-          actionInstruction,
-        );
+        const responseText = await this.generateSceneUserReply(state, {
+          sceneLabel: '演示 / 画布（SCENE_PRESENT）',
+          contextItems: [
+            '产品事实：创建画板流程可能产生两条独立入口——「正文文档」与「画板画布」。',
+            '正文文档用于结构化撰写；画板为可手绘的空白画布。',
+            '应避免同一内容在正文与画布两处重复堆叠大段文字。',
+          ],
+          constraints: [
+            '用用户能理解的方式区分「正文文档」与「画板」各自的用途，不提内部路由名或字段名。',
+            '不得生成虚构链接或具体时间承诺。',
+            '篇幅 2～6 句话。',
+          ],
+        });
+        const response = buildResponse(responseText, actionInstruction);
         return updateStateWithTrace(state, response, 'present_node');
       })
-      .addNode('clarify_node', (state) => {
-        const response = buildResponse(
-          '我理解到你可能在发起协作任务。请补充：要创建文档、画板，还是要向已有画板追加内容？',
-        );
+      .addNode('clarify_node', async (state) => {
+        const fallbackReason =
+          state.skillExecutionPlan?.primarySkill.fallbackReason;
+        const responseText = await this.generateSceneUserReply(state, {
+          sceneLabel: '意图澄清（CLARIFY）',
+          contextItems: [
+            `当前归类意图：${state.intent}`,
+            `置信度：${state.confidence}`,
+            ...(fallbackReason ? [`系统备注：${fallbackReason}`] : []),
+          ],
+          constraints: [
+            '提出 1～3 个具体问题以缩小范围（例如：文档新建、画板新建、向已有画板追加、多端同步等）。',
+            '不要替用户武断选定路径；语气友好、简短。',
+          ],
+        });
+        const response = buildResponse(responseText);
         return updateStateWithTrace(state, response, 'clarify_node');
       })
       // 通用回复节点
@@ -346,24 +459,54 @@ export class AgentService {
     return this.compiledGraph;
   }
 
+  private applyBenignBoardCorrection(
+    text: string,
+    classification: IntentClassification,
+  ): IntentClassification {
+    if (classification.intent !== 'SAFE_REFUSAL') {
+      return classification;
+    }
+    if (!EXPLICIT_BOARD_OR_CANVAS_CREATION_RE.test(text.trim())) {
+      return classification;
+    }
+    return {
+      ...classification,
+      intent: 'SCENE_PRESENT',
+      confidence: Math.max(classification.confidence, 0.93),
+      reason: `显式画板/画布/白板创建语境，纠正误判的安全拒答（原判定：${classification.reason}）`,
+      parameters: {
+        ...(classification.parameters ?? {}),
+        routingSource: 'safe-refusal-board-correction',
+      },
+    };
+  }
+
   private async classifyIntent(text: string): Promise<IntentClassification> {
     // 生成缓存键
     const cacheKey = `intent:${text.trim().toLowerCase()}`;
 
-    // 尝试从缓存中获取
-    const cachedResult = this.cacheService.get<IntentClassification>(cacheKey);
-    if (cachedResult) {
+    const cachedRaw = this.cacheService.get<unknown>(cacheKey);
+    if (cachedRaw !== null) {
       this.logger.debug(`从缓存获取意图分类结果: ${cacheKey}`);
-      return cachedResult;
+      const cachedResult = IntentSchema.parse(cachedRaw);
+      const fixed = this.applyBenignBoardCorrection(text, cachedResult);
+      if (fixed.intent !== cachedResult.intent) {
+        this.cacheService.set(cacheKey, fixed, this.cacheExpiry);
+        this.logger.debug(
+          `意图缓存纠偏: ${cacheKey} ${cachedResult.intent} -> ${fixed.intent}`,
+        );
+      }
+      return fixed;
     }
 
     const routeResult = await this.intentRoutingService.route(text);
     const result = IntentSchema.parse(routeResult.classification);
+    const finalResult = this.applyBenignBoardCorrection(text, result);
 
-    this.cacheService.set(cacheKey, result, this.cacheExpiry);
+    this.cacheService.set(cacheKey, finalResult, this.cacheExpiry);
     this.logger.debug(`缓存意图分类结果: ${cacheKey} [${routeResult.source}]`);
 
-    return result;
+    return finalResult;
   }
 
   private buildSkillPromptContext(): string {

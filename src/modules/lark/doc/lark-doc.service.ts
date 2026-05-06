@@ -89,6 +89,60 @@ function readOptionalConfigFolderToken(value: unknown): string | undefined {
     : undefined;
 }
 
+/** SDK 底层多为 axios；不直接依赖 axios 类型，用结构识别以便打出飞书响应体 */
+function tryReadHttpClientResponse(error: unknown):
+  | {
+      status?: number;
+      data?: unknown;
+    }
+  | undefined {
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+  const resp = (error as { response?: unknown }).response;
+  if (typeof resp !== 'object' || resp === null) {
+    return undefined;
+  }
+  const r = resp as { status?: unknown; data?: unknown };
+  const status = typeof r.status === 'number' ? r.status : undefined;
+  return { status, data: r.data };
+}
+
+function serializeFeishuErrorPayload(data: unknown, maxLen = 2000): string {
+  if (data === undefined || data === null) {
+    return '';
+  }
+  try {
+    const s = typeof data === 'string' ? data : JSON.stringify(data);
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+  } catch {
+    return '[Unserializable error payload]';
+  }
+}
+
+function describeDocumentCreateFailure(error: unknown): string {
+  const http = tryReadHttpClientResponse(error);
+  if (!http) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  const env =
+    http.data !== undefined &&
+    typeof http.data === 'object' &&
+    http.data !== null &&
+    !Array.isArray(http.data)
+      ? (http.data as Record<string, unknown>)
+      : undefined;
+  const code = env && typeof env['code'] === 'number' ? env['code'] : undefined;
+  const msg = env && typeof env['msg'] === 'string' ? env['msg'] : undefined;
+  const bits = [
+    `HTTP ${http.status ?? '?'}`,
+    code !== undefined ? `code=${code}` : '',
+    msg ? `msg=${msg}` : '',
+    serializeFeishuErrorPayload(http.data),
+  ].filter(Boolean);
+  return bits.join(' ');
+}
+
 @Injectable()
 export class LarkDocService {
   private readonly logger = new Logger(LarkDocService.name);
@@ -131,28 +185,48 @@ export class LarkDocService {
         this.configService.get<string>('LARK_CLOUD_FOLDER_TOKEN'),
       );
 
-    const data: { title: string; folder_token?: string } = { title };
+    let safeTitle = title.trim().replaceAll('\u0000', '');
+    if (safeTitle.length > 255) {
+      safeTitle = safeTitle.slice(0, 255);
+      this.logger.warn(
+        `文档标题超过 255 字符已截断（飞书创建接口常见上限），截断后长度=${safeTitle.length}`,
+      );
+    }
+    if (!safeTitle) {
+      safeTitle = `Zeno 文档-${new Date().toLocaleString('zh-CN')}`;
+    }
+
+    const data: { title: string; folder_token?: string } = {
+      title: safeTitle,
+    };
     if (folder_token) {
       data.folder_token = folder_token;
     }
 
-    const response = await this.getDocx().v1.document.create({
-      data,
-    });
+    try {
+      const response = await this.getDocx().v1.document.create({
+        data,
+      });
 
-    const documentId =
-      response.data?.document?.document_id ?? response.data?.document_id;
+      const documentId =
+        response.data?.document?.document_id ?? response.data?.document_id;
 
-    if (!documentId) {
-      throw new Error('未从飞书文档接口返回 document_id');
+      if (!documentId) {
+        throw new Error('未从飞书文档接口返回 document_id');
+      }
+
+      this.logger.log(`✅ 文档创建成功: ${documentId}`);
+
+      return {
+        documentId,
+        url: `https://feishu.cn/docx/${documentId}`,
+      };
+    } catch (error) {
+      this.logger.error(
+        `❌ 飞书创建文档失败 titleLen=${safeTitle.length} folderToken=${folder_token ? 'set' : 'unset'}: ${describeDocumentCreateFailure(error)}`,
+      );
+      throw error;
     }
-
-    this.logger.log(`✅ 文档创建成功: ${documentId}`);
-
-    return {
-      documentId,
-      url: `https://feishu.cn/docx/${documentId}`,
-    };
   }
 
   async addBlockToDocument(

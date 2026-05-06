@@ -32,12 +32,13 @@ describe('IntentTransformerService', () => {
   });
 
   it('should compute cosine similarity from feature-extraction payload', async () => {
+    const embeddingPayload = JSON.stringify([
+      [0.1, 0.3, 0.6],
+      [0.2, 0.2, 0.6],
+    ]);
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => [
-        [0.1, 0.3, 0.6],
-        [0.2, 0.2, 0.6],
-      ],
+      text: async () => embeddingPayload,
     });
     global.fetch = fetchMock as typeof fetch;
 
@@ -50,9 +51,9 @@ describe('IntentTransformerService', () => {
             get: (key: string) => {
               if (key === 'INTENT_TRANSFORMER_ENABLED') return 'true';
               if (key === 'INTENT_TRANSFORMER_MODEL')
-                return 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2';
+                return 'intfloat/multilingual-e5-large';
               if (key === 'INTENT_TRANSFORMER_BASE_URL')
-                return 'https://api-inference.huggingface.co/pipeline/feature-extraction';
+                return 'https://router.huggingface.co/hf-inference';
               if (key === 'HUGGINGFACE_API_TOKEN') return 'test-token';
               return '';
             },

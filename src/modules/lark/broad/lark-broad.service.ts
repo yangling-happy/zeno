@@ -52,10 +52,10 @@ interface LarkBoardNodesCreateResponseData {
   client_token?: string;
 }
 
-/** 画板「文本图形」节点（与官方示例字段对齐的最小子集） */
-interface BoardTextShapeNode {
+/** 画板圆角矩形节点（composite_shape / round_rect，比纯 text_shape 更易扫读） */
+interface BoardRoundRectShapeNode {
   id: string;
-  type: 'text_shape';
+  type: 'composite_shape';
   x: number;
   y: number;
   angle: number;
@@ -77,6 +77,21 @@ interface BoardTextShapeNode {
     theme_text_background_color_code: number;
     text_color_type: number;
     text_background_color_type: number;
+  };
+  style: {
+    fill_color: string;
+    fill_opacity: number;
+    border_style: 'solid';
+    border_width: 'narrow';
+    border_color: string;
+    border_opacity: number;
+    theme_fill_color_code: number;
+    theme_border_color_code: number;
+    fill_color_type: number;
+    border_color_type: number;
+  };
+  composite_shape: {
+    type: 'round_rect';
   };
 }
 
@@ -114,10 +129,30 @@ function readFeishuErrorMsg(raw: unknown): string | undefined {
 @Injectable()
 export class LarkBroadService {
   private readonly logger = new Logger(LarkBroadService.name);
-  /** 单行过长时拆成多段，避免画布上一行拉得过宽、与上下行视觉重叠 */
-  private static readonly BOARD_LINE_MAX_CHARS = 52;
-  /** 相邻文本图形纵向间距（px） */
-  private static readonly BOARD_LINE_GAP_PX = 26;
+  /** 相邻卡片纵向间距（px） */
+  private static readonly BOARD_LINE_GAP_PX = 36;
+  /** 卡片水平内边距（单侧，计入宽高，避免文字贴边或被裁切） */
+  private static readonly BOARD_CARD_PAD_X = 28;
+  /** 卡片垂直内边距（单侧，计入高度） */
+  private static readonly BOARD_CARD_PAD_Y = 22;
+  /**
+   * 每个版块轮换配色（填充 + 描边），保证相邻块易区分、对比度适中。
+   */
+  private static readonly BOARD_CARD_PALETTE: ReadonlyArray<{
+    fill: string;
+    border: string;
+  }> = [
+    { fill: '#e8f4fc', border: '#3370ff' },
+    { fill: '#e8faf0', border: '#00b42a' },
+    { fill: '#fff7e8', border: '#ff7d00' },
+    { fill: '#fce8f4', border: '#eb2f96' },
+    { fill: '#f0e8fc', border: '#722ed1' },
+    { fill: '#e6fffb', border: '#13c2c2' },
+    { fill: '#fff1f0', border: '#f5222d' },
+    { fill: '#f6ffed', border: '#52c41a' },
+    { fill: '#e6f7ff', border: '#1890ff' },
+    { fill: '#fffbe6', border: '#faad14' },
+  ];
 
   private client: Lark.Client | null = null;
   private readonly docService: LarkDocService;
@@ -188,7 +223,7 @@ export class LarkBroadService {
   }
 
   /**
-   * 将 Markdown 解析为与文档块相同的结构，再映射为画板上的多段文本节点（纵向排列）。
+   * 将 Markdown 解析为文档块结构：每个块对应画板上一张圆角卡片（同一段落/标题/列表项等多行文字在同一卡片内）。
    */
   async appendMarkdownToWhiteboard(
     whiteboardId: string,
@@ -201,7 +236,7 @@ export class LarkBroadService {
     return this.appendBoardLines(whiteboardId, lines);
   }
 
-  /** 向画板追加纯文本（单个 text_shape，用于兼容旧逻辑） */
+  /** 向画板追加纯文本（单块圆角矩形，用于兼容旧逻辑） */
   async appendPlainTextToWhiteboard(
     whiteboardId: string,
     text: string,
@@ -370,6 +405,7 @@ export class LarkBroadService {
     return undefined;
   }
 
+  /** 每个文档块 → 画板上一块卡片（不再按字符拆成多张）。 */
   private blocksToBoardLines(
     blocks: BlockChildren[],
   ): Array<{ text: string; fontSize: number; bold: boolean }> {
@@ -397,9 +433,11 @@ export class LarkBroadService {
         out.push({ text: plain, fontSize: 14, bold: false });
       } else if (bt === BLOCK_TYPE_MAP.CODE) {
         const body = plain || ' ';
-        out.push({ text: '```', fontSize: 12, bold: false });
-        out.push({ text: body, fontSize: 12, bold: false });
-        out.push({ text: '```', fontSize: 12, bold: false });
+        out.push({
+          text: `\`\`\`\n${body}\n\`\`\``,
+          fontSize: 12,
+          bold: false,
+        });
       } else if (bt === BLOCK_TYPE_MAP.QUOTE && plain) {
         out.push({ text: `「${plain}」`, fontSize: 14, bold: false });
       } else if (bt === BLOCK_TYPE_MAP.DIVIDER) {
@@ -456,68 +494,95 @@ export class LarkBroadService {
     return '';
   }
 
-  /** 将超长单行拆成多行文本图形，减少横向挤成一团 */
-  private expandBoardLinesForReadability(
-    lines: Array<{ text: string; fontSize: number; bold: boolean }>,
-  ): Array<{ text: string; fontSize: number; bold: boolean }> {
-    const max = LarkBroadService.BOARD_LINE_MAX_CHARS;
-    const out: Array<{ text: string; fontSize: number; bold: boolean }> = [];
-    for (const line of lines) {
-      const t = line.text;
-      if (t.length <= max) {
-        out.push(line);
-        continue;
-      }
-      for (let i = 0; i < t.length; i += max) {
-        out.push({
-          text: t.slice(i, i + max),
-          fontSize: line.fontSize,
-          bold: line.bold,
-        });
-      }
+  /**
+   * 按画布可用宽度估算文本占用的视觉行数（含显式换行与自动折行）。
+   */
+  private estimateBoardVisualRows(
+    text: string,
+    fontSize: number,
+    contentWidthPx: number,
+  ): number {
+    const charUnit = Math.max(fontSize * 0.5, 6);
+    const charsPerLine = Math.max(4, Math.floor(contentWidthPx / charUnit));
+    let rows = 0;
+    for (const segment of text.split('\n')) {
+      const len = segment.length;
+      rows += Math.max(1, Math.ceil(len / charsPerLine));
     }
-    return out;
+    return Math.max(1, rows);
+  }
+
+  /**
+   * 单个版块（一段）的尺寸：宽度随最长一行增大（有上限），高度随行数增大。
+   */
+  private computeBoardCardLayout(
+    text: string,
+    fontSize: number,
+  ): { width: number; height: number; visualRows: number } {
+    const padX = LarkBroadService.BOARD_CARD_PAD_X;
+    const padY = LarkBroadService.BOARD_CARD_PAD_Y;
+    const minW = 280;
+    const maxW = 920;
+    const lines = text.split('\n');
+    const longestRun = Math.max(1, ...lines.map((l) => l.length));
+
+    const width = Math.min(
+      maxW,
+      Math.max(minW, Math.ceil(longestRun * fontSize * 0.52) + padX * 2),
+    );
+    const contentW = width - padX * 2;
+    const visualRows = this.estimateBoardVisualRows(text, fontSize, contentW);
+    const rowLineHeight = fontSize * 1.58;
+    const height =
+      padY * 2 + Math.max(fontSize * 2.2, visualRows * rowLineHeight);
+
+    return { width, height, visualRows };
   }
 
   private async appendBoardLines(
     whiteboardId: string,
     lines: Array<{ text: string; fontSize: number; bold: boolean }>,
   ): Promise<LarkBroadAppendMarkdownResult> {
-    const expanded = this.expandBoardLinesForReadability(lines);
-    if (expanded.length === 0) {
+    if (lines.length === 0) {
       return { nodeIds: [] };
     }
 
     const baseX = 72;
     let y = 80;
     const lineGap = LarkBroadService.BOARD_LINE_GAP_PX;
-    const nodes: BoardTextShapeNode[] = [];
+    const nodes: BoardRoundRectShapeNode[] = [];
     const ts = Date.now();
 
-    for (let i = 0; i < expanded.length; i++) {
-      const { text, fontSize, bold } = expanded[i];
+    const palette = LarkBroadService.BOARD_CARD_PALETTE;
+
+    for (let i = 0; i < lines.length; i++) {
+      const { text, fontSize, bold } = lines[i];
       const safe = text.length > 1024 ? `${text.slice(0, 1021)}...` : text;
-      const lineHeight = Math.max(28, fontSize * 1.75);
-      const width = Math.min(
-        880,
-        Math.max(120, Math.ceil(safe.length * (fontSize * 0.48))),
-      );
+      const {
+        width,
+        height: blockHeight,
+        visualRows,
+      } = this.computeBoardCardLayout(safe, fontSize);
+
+      const isHeading = bold && fontSize >= 17;
+      const multiLineParagraph = visualRows > 1 || safe.includes('\n');
+      const colors = palette[i % palette.length];
 
       nodes.push({
         id: `zeno:${ts}:${i}`,
-        type: 'text_shape',
+        type: 'composite_shape',
         x: baseX,
         y,
         angle: 0,
-        height: lineHeight,
+        height: blockHeight,
         width,
         z_index: i,
         text: {
           text: safe,
           font_weight: bold ? 'bold' : 'regular',
           font_size: fontSize,
-          horizontal_align: 'left',
-          vertical_align: 'top',
+          horizontal_align: isHeading ? 'center' : 'left',
+          vertical_align: multiLineParagraph ? 'top' : 'mid',
           text_color: '#1f2329',
           line_through: false,
           underline: false,
@@ -528,17 +593,32 @@ export class LarkBroadService {
           text_color_type: 0,
           text_background_color_type: 0,
         },
+        style: {
+          fill_color: colors.fill,
+          fill_opacity: 100,
+          border_style: 'solid',
+          border_width: 'narrow',
+          border_color: colors.border,
+          border_opacity: 100,
+          theme_fill_color_code: -1,
+          theme_border_color_code: -1,
+          fill_color_type: 0,
+          border_color_type: 0,
+        },
+        composite_shape: {
+          type: 'round_rect',
+        },
       });
 
-      y += lineHeight + lineGap;
+      y += blockHeight + lineGap;
     }
 
-    const raw: unknown = (await this.requireClient().request({
+    const raw: unknown = await this.requireClient().request({
       method: 'POST',
       url: `https://open.feishu.cn/open-apis/board/v1/whiteboards/${encodeURIComponent(whiteboardId)}/nodes`,
       data: { nodes },
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    })) as unknown;
+    });
 
     const code = readFeishuCodeFromRaw(raw);
     if (code !== undefined && code !== 0) {
@@ -557,7 +637,7 @@ export class LarkBroadService {
     const nodeIds = fromIds && fromIds.length > 0 ? fromIds : fromNodes;
 
     this.logger.log(
-      `✅ 已向画板提交 ${nodes.length} 个文本节点（服务端返回 id ${nodeIds.length} 条）`,
+      `✅ 已向画板提交 ${nodes.length} 个图形节点（composite_shape，服务端返回 id ${nodeIds.length} 条）`,
     );
 
     return { nodeIds };

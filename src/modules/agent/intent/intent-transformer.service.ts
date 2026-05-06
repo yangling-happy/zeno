@@ -1,6 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+/** HF Inference Providers（serverless）路由器；旧的 api-inference 主机已不再接受 POST /models。 */
+const HF_INFERENCE_ROUTER_BASE = 'https://router.huggingface.co/hf-inference';
+const LEGACY_HF_INFERENCE_HOST = 'api-inference.huggingface.co';
+/** 在 Router /models 上会误判为 SentenceSimilarity，无法用 inputs 字符串做嵌入。 */
+const ROUTER_INCOMPATIBLE_EMBEDDING_MODEL =
+  'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2';
+const DEFAULT_EMBEDDING_MODEL = 'intfloat/multilingual-e5-large';
+
 @Injectable()
 export class IntentTransformerService {
   private readonly logger = new Logger(IntentTransformerService.name);
@@ -10,14 +18,22 @@ export class IntentTransformerService {
   private readonly enabled: boolean;
 
   constructor(private readonly configService: ConfigService) {
-    const model =
+    let model =
       this.configService.get<string>('INTENT_TRANSFORMER_MODEL') ||
-      'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2';
-    const baseUrl =
-      this.configService.get<string>('INTENT_TRANSFORMER_BASE_URL') ||
-      'https://api-inference.huggingface.co/pipeline/feature-extraction';
+      DEFAULT_EMBEDDING_MODEL;
+    if (model === ROUTER_INCOMPATIBLE_EMBEDDING_MODEL) {
+      this.logger.warn(
+        `INTENT_TRANSFORMER_MODEL=${ROUTER_INCOMPATIBLE_EMBEDDING_MODEL} 在当前 Inference API 上无法用于文本嵌入，已改用 ${DEFAULT_EMBEDDING_MODEL}。`,
+      );
+      model = DEFAULT_EMBEDDING_MODEL;
+    }
 
-    this.endpoint = `${baseUrl.replace(/\/$/, '')}/${model}`;
+    let baseUrl =
+      this.configService.get<string>('INTENT_TRANSFORMER_BASE_URL') ||
+      HF_INFERENCE_ROUTER_BASE;
+    baseUrl = this.normalizeInferenceBaseUrl(baseUrl);
+
+    this.endpoint = `${baseUrl.replace(/\/$/, '')}/models/${model}`;
     this.apiToken =
       this.configService.get<string>('HUGGINGFACE_API_TOKEN') || '';
 
@@ -26,6 +42,24 @@ export class IntentTransformerService {
     ).toLowerCase();
 
     this.enabled = enabledFlag !== 'false';
+  }
+
+  private normalizeInferenceBaseUrl(raw: string): string {
+    const trimmed = raw.replace(/\/$/, '');
+    try {
+      const url = new URL(
+        trimmed.startsWith('http') ? trimmed : `https://${trimmed}`,
+      );
+      if (url.hostname === LEGACY_HF_INFERENCE_HOST) {
+        this.logger.warn(
+          'INTENT_TRANSFORMER_BASE_URL 指向已弃用的 api-inference.huggingface.co，已自动改用 https://router.huggingface.co/hf-inference。',
+        );
+        return HF_INFERENCE_ROUTER_BASE;
+      }
+    } catch {
+      // 无效 URL 留在后续 fetch 时报错
+    }
+    return trimmed;
   }
 
   isEnabled(): boolean {
@@ -84,6 +118,7 @@ export class IntentTransformerService {
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      Accept: 'application/json',
     };
 
     if (this.apiToken) {
@@ -101,7 +136,7 @@ export class IntentTransformerService {
       }),
     });
 
-    const payload = (await response.json()) as unknown;
+    const payload = await this.parseJsonResponseBody(response);
 
     if (!response.ok) {
       const message =
@@ -156,5 +191,20 @@ export class IntentTransformerService {
     }
 
     return pooled;
+  }
+
+  private async parseJsonResponseBody(response: Response): Promise<unknown> {
+    const raw = await response.text();
+    if (!raw.trim()) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      const preview = raw.trim().slice(0, 200).replace(/\s+/g, ' ');
+      throw new Error(
+        `Transformer 响应非 JSON（HTTP ${response.status}）：${preview}`,
+      );
+    }
   }
 }

@@ -49,6 +49,20 @@ describe('AgentToolService', () => {
     }
   });
 
+  it('should treat 画布 like 画板 for LARK_BOARD_CREATE (not LARK_DOC_PRESENT_LINK)', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_PRESENT',
+      {},
+      '给我创建一个画布，写大模型幻觉的',
+      0.9,
+    );
+
+    expect(action.type).toBe('LARK_BOARD_CREATE');
+    if (action.type === 'LARK_BOARD_CREATE') {
+      expect(action.params.summary).toMatch(/大模型幻觉/);
+    }
+  });
+
   it('should append markdown to an existing whiteboard when whiteboardId is provided', () => {
     const action = service.buildActionInstruction(
       'SCENE_PRESENT',

@@ -1,3 +1,4 @@
+import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from '../intent/explicit-board-pattern';
 import {
   IntentType,
   SkillDefinition,
@@ -203,6 +204,8 @@ export const INTENT_RECOGNITION_EXAMPLES: Record<IntentType, string[]> = {
     '整理成汇报材料',
     '做一份路演演示',
     '把内容写到画布里',
+    '给我创建一个画板，写大模型幻觉的',
+    '新建白板整理会议纪要',
   ],
   SCENE_SYNC: [
     '同步我的设备数据',
@@ -261,8 +264,9 @@ export const INTENT_RECOGNITION_REGEX_RULES: Record<IntentType, RegExp[]> = {
     /(文档|计划|方案|提纲).*(写|生成|创建|起草)/,
   ],
   SCENE_PRESENT: [
-    /(PPT|演示|汇报|画布|幻灯片)/,
+    /(PPT|演示|汇报|画布|画板|白板|幻灯片)/,
     /(做|生成|整理).*(PPT|演示稿|汇报材料)/,
+    EXPLICIT_BOARD_OR_CANVAS_CREATION_RE,
   ],
   SCENE_SYNC: [
     /(同步|跨端|设备).*(数据|状态|内容)/,

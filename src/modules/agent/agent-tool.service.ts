@@ -6,6 +6,7 @@ import {
   SkillId,
 } from './agent.types';
 import { isLikelyActionRequest } from '../common/agent.utils';
+import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from './intent/explicit-board-pattern';
 
 @Injectable()
 export class AgentToolService {
@@ -107,7 +108,8 @@ export class AgentToolService {
 
     if (intent === 'SCENE_PRESENT') {
       const wantsNewBoard =
-        /(?:新建|创建).*画板|画板.*(?:文档)?.*(?:创建|新建)|(?:单独|独立).*画板/.test(
+        EXPLICIT_BOARD_OR_CANVAS_CREATION_RE.test(normalizedText) ||
+        /(?:画板|画布|白板).*(?:文档)?.*(?:创建|新建)|(?:单独|独立).*(?:画板|画布|白板)/.test(
           normalizedText,
         );
 
