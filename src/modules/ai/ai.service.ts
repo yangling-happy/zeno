@@ -21,7 +21,8 @@ interface ArkChatCompletionResponse {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private readonly maxRetries = 3;
-  private readonly timeout = 600000; // 60秒超时
+  private readonly timeout = 600000;
+  private readonly tpmRetryDelayMs = 35000; // TPM限制延迟35秒
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -37,9 +38,21 @@ export class AiService {
           `AI 调用失败 (尝试 ${attempt + 1}/${this.maxRetries}): ${lastError.message}`,
         );
 
-        // 指数退避
+        // 判断是否为 TPM 限制错误
+        const isTPMLimit =
+          lastError.message.includes('Tokens Per Minute') ||
+          lastError.message.includes('TPM') ||
+          lastError.message.includes('rate_limit');
+
         if (attempt < this.maxRetries - 1) {
-          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+          // TPM 限制需要更长的等待时间
+          const delay = isTPMLimit
+            ? this.tpmRetryDelayMs
+            : Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+
+          this.logger.log(
+            `${isTPMLimit ? 'TPM 限制' : '正常'} - 等待 ${delay / 1000} 秒后重试...`,
+          );
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }

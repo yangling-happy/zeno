@@ -2,7 +2,10 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AgentService } from '../agent/agent.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
+import { LarkBroadService } from './broad/lark-broad.service';
+import { LarkDocService } from './doc/lark-doc.service';
 import { LarkService } from './lark.service';
+import { LarkSlidesService } from './slides/lark-slides.service';
 import { MemoryService } from '../memory/memory.service';
 
 const memoryServiceMock = {
@@ -111,6 +114,29 @@ describe('LarkService', () => {
           provide: MemoryService,
           useValue: memoryServiceMock,
         },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn(),
+            appendMarkdownToDocument: jest.fn(),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -159,6 +185,35 @@ describe('LarkService', () => {
         {
           provide: MemoryService,
           useValue: memoryServiceMock,
+        },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn().mockResolvedValue({
+              documentId: 'doc_test_123',
+              url: 'https://feishu.cn/docx/doc_test_123',
+            }),
+            appendMarkdownToDocument: jest.fn().mockResolvedValue({
+              blockIds: ['block_test_123'],
+              parentBlockId: 'doc_test_123',
+            }),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -249,6 +304,29 @@ describe('LarkService', () => {
           provide: MemoryService,
           useValue: memoryServiceMock,
         },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn(),
+            appendMarkdownToDocument: jest.fn(),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -300,6 +378,29 @@ describe('LarkService', () => {
           provide: MemoryService,
           useValue: memoryServiceMock,
         },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn(),
+            appendMarkdownToDocument: jest.fn(),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -339,6 +440,29 @@ describe('LarkService', () => {
         {
           provide: MemoryService,
           useValue: memoryServiceMock,
+        },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn(),
+            appendMarkdownToDocument: jest.fn(),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -399,6 +523,35 @@ describe('LarkService', () => {
           provide: MemoryService,
           useValue: memoryServiceMock,
         },
+        {
+          provide: LarkDocService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocument: jest.fn().mockResolvedValue({
+              documentId: 'doc_test_123',
+              url: 'https://feishu.cn/docx/doc_test_123',
+            }),
+            appendMarkdownToDocument: jest.fn().mockResolvedValue({
+              blockIds: ['block_test_123'],
+              parentBlockId: 'doc_test_123',
+            }),
+          },
+        },
+        {
+          provide: LarkSlidesService,
+          useValue: {
+            initClient: jest.fn(),
+            createPresentation: jest.fn(),
+          },
+        },
+        {
+          provide: LarkBroadService,
+          useValue: {
+            initClient: jest.fn(),
+            createDocumentWithBoard: jest.fn(),
+            appendMarkdownToWhiteboard: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -413,7 +566,10 @@ describe('LarkService', () => {
     });
     await flushPromises();
 
-    expect(docCreateMock).toHaveBeenCalledTimes(1);
+    const larkDocService = moduleRef.get(LarkDocService);
+
+    expect(larkDocService.createDocument).toHaveBeenCalledTimes(1);
+    expect(larkDocService.appendMarkdownToDocument).toHaveBeenCalledTimes(1);
     expect(replyMock).toHaveBeenCalledTimes(1);
     const replyPayload = replyMock.mock.calls[0][0];
     expect(replyPayload.path.message_id).toBe('om_doc_create_test_id');

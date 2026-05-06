@@ -1,10 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AgentService } from '../agent.service';
 import { AiService } from '../../ai/ai.service';
-import { AgentToolService } from '../agent-tool.service';
+import { AgentToolService } from '../tool/agent-tool.service';
 import { IntentRoutingService } from './intent-routing.service';
 import { SessionService } from '../session/session.service';
-import { CacheService } from '../cache.service';
+import { CacheService } from '../cache/cache.service';
 import { ConfigService } from '@nestjs/config';
 
 // 模拟配置服务

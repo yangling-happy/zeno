@@ -1,10 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AgentService } from './agent.service';
 import { AiService } from '../ai/ai.service';
-import { AgentToolService } from './agent-tool.service';
+import { AgentToolService } from './tool/agent-tool.service';
 import { IntentRoutingService } from './intent/intent-routing.service';
 import { SessionService } from './session/session.service';
-import { CacheService } from './cache.service';
+import { CacheService } from './cache/cache.service';
 import { ConfigService } from '@nestjs/config';
 
 describe('AgentService', () => {
@@ -34,7 +34,7 @@ describe('AgentService', () => {
 
     cacheService = {
       set: jest.fn(),
-      get: jest.fn(),
+      get: jest.fn().mockReturnValue(null),
       delete: jest.fn(),
       clear: jest.fn(),
       size: jest.fn(),
@@ -202,7 +202,7 @@ describe('AgentService', () => {
       const result = await (agentService as any).classifyIntent('你好');
 
       // 验证结果
-      expect(result).toBe(cachedResult);
+      expect(result).toStrictEqual(cachedResult);
       expect(aiService.chat).not.toHaveBeenCalled();
     });
   });

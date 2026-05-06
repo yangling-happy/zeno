@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { BLOCK_TYPE_MAP, BlockChildren } from '../doc/lark-doc-block.types';
 import { LarkDocService } from '../doc/lark-doc.service';
@@ -8,7 +7,6 @@ import {
   LarkBroadAppendMarkdownResult,
   LarkBroadCreateBoardResult,
 } from './lark-broad.types';
-import { InstructionDetectorService } from '../../common/instruction-detector.service';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -155,14 +153,8 @@ export class LarkBroadService {
   ];
 
   private client: Lark.Client | null = null;
-  private readonly docService: LarkDocService;
 
-  constructor(
-    configService: ConfigService,
-    instructionDetector: InstructionDetectorService,
-  ) {
-    this.docService = new LarkDocService(configService, instructionDetector);
-  }
+  constructor(private readonly docService: LarkDocService) {}
 
   initClient(client: Lark.Client) {
     this.client = client;

@@ -152,8 +152,9 @@ export class LarkDocService {
   constructor(
     private readonly configService: ConfigService,
     private readonly instructionDetector: InstructionDetectorService,
+    docWriter: LarkDocWriterService,
   ) {
-    this.docWriter = new LarkDocWriterService();
+    this.docWriter = docWriter;
   }
 
   initClient(client: Lark.Client) {

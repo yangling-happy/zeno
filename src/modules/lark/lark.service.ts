@@ -6,9 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { LarkBroadService } from './broad/lark-broad.service';
 import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
-import { LarkBroadService } from './broad/lark-broad.service';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
@@ -71,9 +71,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
   private readonly processedMessageTimestamps = new Map<string, number>();
   private readonly processedMessageTtlMs = 10 * 60 * 1000;
   private readonly processedMessageMaxSize = 5000;
-  private readonly docService: LarkDocService;
-  private readonly slidesService: LarkSlidesService;
-  private readonly broadService: LarkBroadService;
   private readonly userContextMap = new Map<
     string,
     {
@@ -89,17 +86,10 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     private readonly agentService: AgentService,
     private readonly instructionDetector: InstructionDetectorService,
     private readonly memoryService: MemoryService,
-  ) {
-    this.docService = new LarkDocService(configService, instructionDetector);
-    this.slidesService = new LarkSlidesService(
-      configService,
-      instructionDetector,
-    );
-    this.broadService = new LarkBroadService(
-      configService,
-      instructionDetector,
-    );
-  }
+    private readonly docService: LarkDocService,
+    private readonly slidesService: LarkSlidesService,
+    private readonly broadService: LarkBroadService,
+  ) {}
 
   onModuleInit() {
     this.initLarkWS();

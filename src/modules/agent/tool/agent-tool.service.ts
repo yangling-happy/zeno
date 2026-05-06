@@ -4,9 +4,9 @@ import {
   IntentType,
   SkillExecutionPlan,
   SkillId,
-} from './agent.types';
-import { isLikelyActionRequest } from '../common/agent.utils';
-import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from './intent/explicit-board-pattern';
+} from '../agent.types';
+import { isLikelyActionRequest } from '../../common/agent.utils';
+import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from '../intent/explicit-board-pattern';
 
 @Injectable()
 export class AgentToolService {
