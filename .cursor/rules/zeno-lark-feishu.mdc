@@ -1,0 +1,12 @@
+---
+description: 飞书 Lark 集成：消息、文档、幻灯、广播子模块
+globs: src/modules/lark/**/*.ts
+alwaysApply: false
+---
+
+# Lark / 飞书
+
+- **聚合入口**：`lark.module.ts` 组合 `LarkDocModule`、`LarkSlidesModule`、`LarkBroadModule` 与 `AgentModule`、`MemoryModule` 等；新增子域优先独立子模块再 import。
+- **SDK**：`@larksuiteoapi/node-sdk`；注意 token、租户与应用凭证（`.env.example` 中 `LARK_APP_ID` / `LARK_APP_SECRET` 等）。
+- **文档与块**：`doc/` 下类型与写入逻辑（如 `lark-doc-block.types.ts`、`lark-doc-writer.service.ts`）变更时保持与 `common` 中飞书文档工具函数一致。
+- **幻灯**：`slides/lark-slides.service.ts` 等与演示场景相关，改动后跑对应 `*.spec.ts`。

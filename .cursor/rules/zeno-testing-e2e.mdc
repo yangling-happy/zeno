@@ -1,0 +1,11 @@
+---
+description: E2E 测试目录与 jest-e2e 配置
+globs: test/**/*.ts
+alwaysApply: false
+---
+
+# E2E
+
+- 配置：`test/jest-e2e.json`；入口示例 `test/app.e2e-spec.ts`。
+- 运行：`pnpm run test:e2e`。视 `test/app.e2e-spec.ts` 实际依赖准备 `PORT`、数据库或 Redis，或在 spec 内 mock 外部系统。
+- 与单元测试分工：E2E 验证 HTTP/模块装配；复杂业务逻辑放在 `*.spec.ts`。

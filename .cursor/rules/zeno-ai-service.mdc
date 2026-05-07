@@ -1,0 +1,10 @@
+---
+description: 编辑或排查 Zeno AiService（Ark）时使用六步 AI 交互分析模板与对应 skill
+globs: src/modules/ai/**/*.ts
+alwaysApply: false
+---
+
+# Zeno AI 模块
+
+- 调用入口：`AiService`（`src/modules/ai/ai.service.ts`）。关注环境变量：`ARK_API_KEY`、`ARK_MODEL` 或 `ARK_ENDPOINT_ID`、`ARK_BASE_URL`；以及重试、TPM 退避、超时与失败后的 `getFallbackResponse`。
+- 当问题表现为输出异常、空内容、限流、超时或固定兜底文案时：引导用户提供**现象 + 元提示词 + logs**，并按项目技能 `ai-interaction-problem-analysis` 的六级结构输出；根因段只写证据链，方案与验收分开写，验收须可执行、可验证。

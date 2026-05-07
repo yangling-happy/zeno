@@ -1,0 +1,12 @@
+---
+description: Agent 模块：意图路由、技能注册表、LangGraph、工具与会话
+globs: src/modules/agent/**/*.ts
+alwaysApply: false
+---
+
+# Agent 模块
+
+- **意图与技能**：`skill/skill.registry.ts` 中 `SKILL_REGISTRY` 与各 `IntentType` 对齐；改触发词、阈值或 fallback 时需同步考虑 `intent/` 下路由与单测。
+- **图与编排**：`agent-graph.service.ts` 等使用 LangGraph / LangChain；保持类型与 `agent.types.ts`、`zod/agent-zod.schema.ts` 一致，避免绕过校验。
+- **工具与会话**：`tool/agent-tool.service.ts`、`session/session.service.ts` 变更时检查对飞书侧调用链与记忆读写的影响。
+- **测试**：`*.spec.ts` 覆盖意图与路由边界；复杂行为优先用确定性输入与 mock，而非实网 LLM。

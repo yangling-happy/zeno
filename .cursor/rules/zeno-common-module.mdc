@@ -1,0 +1,11 @@
+---
+description: common 模块：飞书文档工具、指令检测、Agent 工具函数
+globs: src/modules/common/**/*.ts
+alwaysApply: false
+---
+
+# Common 模块
+
+- **飞书文档**：`lark-feishu-doc.utils.ts`、`lark-doc-append.utils.ts`、`lark-doc-haystack.utils.ts` 等被 doc/agent 复用；改签名时全局检索引用。
+- **指令检测**：`instruction-detector.service.ts` 影响用户输入分流，改动需补充或更新 `*.spec.ts`。
+- **Agent 工具**：`agent.utils.ts` 与意图/场景回复共享，保持无副作用或文档说明副作用。

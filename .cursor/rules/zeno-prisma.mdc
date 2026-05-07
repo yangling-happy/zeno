@@ -1,0 +1,11 @@
+---
+description: Prisma schema 与数据库迁移约定
+globs: prisma/**/*
+alwaysApply: false
+---
+
+# Prisma
+
+- **数据源**：`DATABASE_URL`，PostgreSQL；变更 `schema.prisma` 后需迁移策略与回滚说明（团队流程若未固定，至少在 PR 描述中写清）。
+- **模型**：`ConversationHistory`、`FactSnippet`、`UserSession` 与业务强耦合；改字段名或类型时同步检索 `src/` 中 `prisma` 客户端用法。
+- 本地 CLI：使用 `pnpm exec prisma ...`（`prisma` 在 `package.json` 的 `devDependencies` 中）。

@@ -1,0 +1,11 @@
+---
+description: OpenTelemetry 初始化与关闭钩子
+globs: src/opentelemetry.ts
+alwaysApply: false
+---
+
+# OpenTelemetry
+
+- `main.ts` 在 bootstrap 调用 `startOtel()`，失败退出路径调用 `shutdownOtel()`。
+- 新增导出器或资源属性时保持与 `@opentelemetry/*` 版本一致（见 `package.json`）；避免在 trace 中记录敏感令牌。
+- 默认导出：`src/opentelemetry.ts` 使用 `JaegerExporter`，示例端点为 `http://localhost:14268/api/traces`；本地需 Jaeger 接收端时再验证链路。

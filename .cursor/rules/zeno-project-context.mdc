@@ -1,0 +1,13 @@
+---
+description: Zeno 仓库全局上下文：技术栈、入口与模块边界（NestJS / 飞书 / Agent / 记忆 / Prisma）
+alwaysApply: true
+---
+
+# Zeno 项目上下文
+
+- **运行时**：NestJS 11 + TypeScript；入口 `src/main.ts`，根模块 `src/app.module.ts`（全局 `ConfigModule`，业务从 `LarkModule` 聚合）。
+- **领域模块**：`src/modules/lark`（飞书消息/文档/幻灯/广播）、`agent`（意图、技能注册表、LangGraph、工具、会话、缓存）、`ai`（Ark 对话）、`memory`（记忆与持久化配合 Prisma）、`common`（共享工具与检测）。
+- **数据**：PostgreSQL + Prisma（`prisma/schema.prisma`），Redis（`REDIS_URL`），向量/事实模型见 README 中的三层记忆描述。
+- **可观测**：`src/opentelemetry.ts` 在启动时接入；本地注意与 Jaeger/导出器配置一致。
+- **包管理**：仓库使用 **pnpm**（见根目录 `pnpm-lock.yaml` / `pnpm-workspace.yaml`）。
+- **常用脚本**：`pnpm run start:dev`、`pnpm run test`、`pnpm run lint:check`、`pnpm run test:e2e`（定义见 `package.json`）。`prepare` 挂有 husky，提交时由 lint-staged 按 `package.json` 配置执行。

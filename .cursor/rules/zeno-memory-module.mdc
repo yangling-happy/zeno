@@ -1,0 +1,11 @@
+---
+description: Memory 模块与 Redis/历史读写约定
+globs: src/modules/memory/**/*.ts
+alwaysApply: false
+---
+
+# Memory 模块
+
+- 与 Prisma 模型 `ConversationHistory`、`FactSnippet`、`UserSession`（见 `prisma/schema.prisma`）及 Redis 缓存层配合；修改序列化字段或 TTL 时检查调用方（Agent、Lark）。
+- 向量/嵌入若涉及，需与 README 中「三层记忆」描述一致；避免在热路径阻塞事件循环。
+- 新增存储访问时保持与现有 `Logger` 用法一致。

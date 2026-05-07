@@ -1,0 +1,12 @@
+---
+description: NestJS 与 TypeScript 约定（模块、注入、配置）
+globs: src/**/*.ts
+alwaysApply: false
+---
+
+# NestJS / TypeScript
+
+- 新能力优先落在对应 `*.module.ts` 的 `providers`/`exports`，跨模块通过 `imports` 引用，避免在 `AppModule` 堆叠无关细节。
+- 配置一律经 `ConfigService` 读取，勿硬编码密钥；环境变量清单以仓库根目录 `.env.example` 为准。
+- 类型与 Lint：`tsconfig.json` 开启 `strictNullChecks`，`noImplicitAny` 为 false；`eslint.config.mjs` 中 `@typescript-eslint/no-explicit-any` 为 **off**，与现有代码风格保持一致即可。
+- `package.json` 含 `@nestjs/platform-socket.io` 等依赖，当前 `src` 中未使用；新增实时通道时再接入即可，并保持与现有模块边界一致。

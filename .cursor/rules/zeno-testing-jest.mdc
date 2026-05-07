@@ -1,0 +1,11 @@
+---
+description: Jest 单元测试与 e2e 约定
+globs: "**/*.spec.ts"
+alwaysApply: false
+---
+
+# 测试
+
+- **单元**：`src` 下 `*.spec.ts`，Jest 配置在 `package.json`；新服务应有可维护的 mock，避免依赖真实飞书/模型。
+- **E2E**：`test/app.e2e-spec.ts` 与 `test/jest-e2e.json`；启动应用或 supertest 时注意端口与环境变量。
+- 运行：`pnpm run test`、`pnpm run test:e2e`、`pnpm run test:cov`（脚本见 `package.json`）。
