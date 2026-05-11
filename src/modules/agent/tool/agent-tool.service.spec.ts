@@ -35,6 +35,35 @@ describe('AgentToolService', () => {
     }
   });
 
+  it('should not treat 写进文档里面 as a topic', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_DOC',
+      undefined,
+      '你帮我写进文档里面，创建一个文档',
+      0.9,
+    );
+
+    expect(action.type).toBe('LARK_DOC_CREATE');
+    if (action.type === 'LARK_DOC_CREATE') {
+      expect(action.params.summary).toBeUndefined();
+    }
+  });
+
+  it('should extract explicit document theme after create request', () => {
+    const action = service.buildActionInstruction(
+      'SCENE_DOC',
+      undefined,
+      '你帮我写进文档里面，创建一个面向程序员群体、核心更新为消息批量删除功能的版本发布文档',
+      0.9,
+    );
+
+    expect(action.type).toBe('LARK_DOC_CREATE');
+    if (action.type === 'LARK_DOC_CREATE') {
+      expect(action.params.summary).toContain('面向程序员群体');
+      expect(action.params.summary).toContain('消息批量删除功能');
+    }
+  });
+
   it('should prefer creating a doc with embedded board when user asks to create a board', () => {
     const action = service.buildActionInstruction(
       'SCENE_PRESENT',

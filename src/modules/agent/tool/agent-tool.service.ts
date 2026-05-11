@@ -7,8 +7,8 @@ import {
 } from '../agent.types';
 import { shouldAppendToLastLarkDoc } from '../../common/lark-doc-append.utils';
 import { isLikelyActionRequest } from '../../common/agent.utils';
+import { extractTopicFromText } from '../../common/topic-extraction.utils';
 import { EXPLICIT_BOARD_OR_CANVAS_CREATION_RE } from '../intent/explicit-board-pattern';
-
 @Injectable()
 export class AgentToolService {
   private readonly logger = new Logger(AgentToolService.name);
@@ -24,49 +24,6 @@ export class AgentToolService {
     'clarify.skill': 'CLARIFY',
     'chitchat.skill': 'CHITCHAT',
   };
-
-  private normalizeTopicCandidate(topic: string): string | undefined {
-    const normalized = topic
-      .trim()
-      .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '')
-      .replace(/^(?:是|为|叫|：|:)\s*/, '')
-      .replace(/(?:的)?(?:文章|文档|内容|材料|报告|PPT|演示|幻灯片)$/i, '')
-      .trim();
-
-    if (
-      !normalized ||
-      /^(?:写?入)?(?:一篇|一份|一个)?(?:文章|文档|内容|材料|报告)$/i.test(
-        normalized,
-      )
-    ) {
-      return undefined;
-    }
-
-    return normalized;
-  }
-
-  private extractTopicFromText(text: string): string | undefined {
-    const patterns = [
-      /(?:主题|题目)\s*(?:是|为|叫|：|:)\s*([^，,。!！?？]+)/i,
-      /以\s*([^，,。!！?？]+?)\s*为主题/i,
-      /(?:关于|围绕|有关)\s*([^，,。!！?？]+)/i,
-      /写(?!入)(?:关于|)\s*([^\s，,。!！?？]+(?:的?[^\s，,。!！?？]+)?)/,
-      /创建.*文档.*写(?!入)([^，,。!！?？]+)/,
-      /生成.*文档.*写(?!入)([^，,。!！?？]+)/,
-      /文档.*写(?!入)([^，,。!！?？]+)/,
-    ];
-
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        const topic = this.normalizeTopicCandidate(match[1]);
-        if (topic && topic.length >= 2 && topic.length <= 50) {
-          return topic;
-        }
-      }
-    }
-    return undefined;
-  }
 
   buildActionInstruction(
     intent: IntentType,
@@ -109,7 +66,7 @@ export class AgentToolService {
       const summaryContent =
         typeof params?.summary === 'string' && params.summary.trim().length > 0
           ? params.summary.trim()
-          : this.extractTopicFromText(normalizedText);
+          : extractTopicFromText(normalizedText);
       return {
         type: 'LARK_DOC_CREATE',
         params: {
@@ -137,7 +94,7 @@ export class AgentToolService {
           typeof params?.summary === 'string' &&
           params.summary.trim().length > 0
             ? params.summary.trim()
-            : this.extractTopicFromText(normalizedText);
+            : extractTopicFromText(normalizedText);
         return {
           type: 'LARK_BOARD_CREATE',
           params: {
@@ -155,7 +112,7 @@ export class AgentToolService {
           typeof params?.summary === 'string' &&
           params.summary.trim().length > 0
             ? params.summary
-            : this.extractTopicFromText(normalizedText);
+            : extractTopicFromText(normalizedText);
         if (textContent === undefined) {
           return { type: 'NONE' };
         }
@@ -171,7 +128,7 @@ export class AgentToolService {
       const summaryContent =
         typeof params?.summary === 'string' && params.summary.trim().length > 0
           ? params.summary.trim()
-          : this.extractTopicFromText(normalizedText);
+          : extractTopicFromText(normalizedText);
       return {
         type: 'LARK_DOC_PRESENT_LINK',
         params: {

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ActionInstruction } from '../agent/agent.types';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
+import { shouldExpandTopicToContent } from '../common/topic-extraction.utils';
 import { LarkBroadService } from './broad/lark-broad.service';
 import { LarkDocService } from './doc/lark-doc.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
@@ -57,10 +58,11 @@ export class LarkActionExecutorService {
               ? doc.url
               : `https://feishu.cn/docx/${doc.documentId}`;
           if (action.params.summary) {
-            const contentToWrite =
-              action.params.summary.length <= 20
-                ? await this.generateContentFromTopic(action.params.summary)
-                : action.params.summary;
+            const contentToWrite = shouldExpandTopicToContent(
+              action.params.summary,
+            )
+              ? await this.generateContentFromTopic(action.params.summary)
+              : action.params.summary;
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
               contentToWrite,
@@ -153,10 +155,11 @@ export class LarkActionExecutorService {
           );
 
           if (action.params.summary) {
-            const contentToWrite =
-              action.params.summary.length <= 20
-                ? await this.generateContentFromTopic(action.params.summary)
-                : action.params.summary;
+            const contentToWrite = shouldExpandTopicToContent(
+              action.params.summary,
+            )
+              ? await this.generateContentFromTopic(action.params.summary)
+              : action.params.summary;
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
               contentToWrite,

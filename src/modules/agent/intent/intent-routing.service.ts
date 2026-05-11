@@ -8,6 +8,7 @@ import {
   buildSkillPromptContext,
 } from '../skill/skill.registry';
 import { detectRequestNature } from '../../common/agent.utils';
+import { extractTopicFromText } from '../../common/topic-extraction.utils';
 import { IntentTransformerService } from './intent-transformer.service';
 
 type RoutingSource = 'regex' | 'transformer' | 'vector' | 'llm' | 'gate';
@@ -64,6 +65,11 @@ export class IntentRoutingService {
 
     const regexMatch = this.matchByRegex(normalizedText);
     if (regexMatch) {
+      const summary =
+        regexMatch.intent === 'SCENE_DOC' ||
+        regexMatch.intent === 'SCENE_PRESENT'
+          ? extractTopicFromText(normalizedText)
+          : undefined;
       return {
         classification: {
           intent: regexMatch.intent,
@@ -72,6 +78,7 @@ export class IntentRoutingService {
           parameters: {
             routingSource: 'regex',
             matchedRule: regexMatch.rule,
+            ...(summary ? { summary } : {}),
           },
         },
         source: 'regex',

@@ -33,7 +33,16 @@ describe('IntentRoutingService', () => {
 
     expect(result.source).toBe('regex');
     expect(result.classification.intent).toBe('SCENE_DOC');
+    expect(result.classification.parameters?.summary).toBe('会议纪要');
     expect(aiService.chat).not.toHaveBeenCalled();
+  });
+
+  it('should not extract 写进文档里面 as regex summary', async () => {
+    const result = await service.route('你帮我写进文档里面，创建一个文档');
+
+    expect(result.source).toBe('regex');
+    expect(result.classification.intent).toBe('SCENE_DOC');
+    expect(result.classification.parameters?.summary).toBeUndefined();
   });
 
   it('should use vector retrieval for semantically similar requests', async () => {
