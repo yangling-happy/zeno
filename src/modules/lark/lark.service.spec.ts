@@ -2,8 +2,10 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { AgentService } from '../agent/agent.service';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
+import { LarkActionExecutorService } from './lark-action-executor.service';
 import { LarkBroadService } from './broad/lark-broad.service';
 import { LarkDocService } from './doc/lark-doc.service';
+import { LarkReplyService } from './lark-reply.service';
 import { LarkService } from './lark.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
 import { MemoryService } from '../memory/memory.service';
@@ -28,6 +30,7 @@ let registeredHandlers: Record<
 const startMock = jest.fn().mockResolvedValue(undefined);
 const stopMock = jest.fn().mockResolvedValue(undefined);
 const replyMock = jest.fn().mockResolvedValue({ code: 0 });
+const createMock = jest.fn().mockResolvedValue({ code: 0 });
 const docCreateMock = jest.fn().mockResolvedValue({
   data: { document: { document_id: 'doc_test_123' } },
 });
@@ -42,6 +45,7 @@ jest.mock('@larksuiteoapi/node-sdk', () => {
     Client: jest.fn().mockImplementation(() => ({
       im: {
         message: {
+          create: createMock,
           reply: replyMock,
         },
       },
@@ -79,6 +83,7 @@ describe('LarkService', () => {
     startMock.mockClear();
     stopMock.mockClear();
     replyMock.mockClear();
+    createMock.mockClear();
     docCreateMock.mockClear();
     docBlockCreateMock.mockClear();
     jest.clearAllMocks();
@@ -88,6 +93,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {
@@ -164,6 +171,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {
@@ -286,6 +295,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {
@@ -368,6 +379,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {
@@ -431,6 +444,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {
@@ -517,6 +532,8 @@ describe('LarkService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         LarkService,
+        LarkActionExecutorService,
+        LarkReplyService,
         {
           provide: ConfigService,
           useValue: {

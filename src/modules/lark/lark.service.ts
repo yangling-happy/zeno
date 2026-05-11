@@ -10,7 +10,10 @@ import { LarkBroadService } from './broad/lark-broad.service';
 import { AgentService } from '../agent/agent.service';
 import { ActionInstruction } from '../agent/agent.types';
 import { LarkDocService } from './doc/lark-doc.service';
+import { LarkActionExecutorService } from './lark-action-executor.service';
+import { LarkReplyService } from './lark-reply.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
+import { LarkWebhookMessage } from './lark.types';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
 import { mergeVisibleAndLarkJsonForDocOps } from '../common/lark-doc-haystack.utils';
 import {
@@ -21,52 +24,8 @@ import { shouldAppendToLastLarkDoc } from '../common/lark-doc-append.utils';
 import { MemoryService } from '../memory/memory.service';
 import { SessionService } from '../agent/session/session.service';
 
-export interface LarkWebhookMessage {
-  chat_id?: string;
-  open_id?: string;
-  content?: string;
-  message_id?: string;
-}
-
-export interface LarkWebhookEvent {
-  sender?: {
-    sender_id?: {
-      open_id?: string;
-      user_id?: string;
-      union_id?: string;
-    };
-    sender_type?: string;
-  };
-  message?: LarkWebhookMessage;
-}
-
-interface LarkCardData {
-  message?: string;
-}
-
 interface StoppableWsClient {
   stop?: () => void | Promise<void>;
-}
-
-/** 仅校验运行时形状；绕开 ESLint 将 switch 内 `action.params` 误判为 error 类型的问题 */
-function parseLarkBoardCreateParams(raw: unknown): {
-  title: string;
-  summary?: string;
-} | null {
-  if (typeof raw !== 'object' || raw === null) {
-    return null;
-  }
-  const o = raw as Record<string, unknown>;
-  if (typeof o.title !== 'string') {
-    return null;
-  }
-  if (o.summary !== undefined && typeof o.summary !== 'string') {
-    return null;
-  }
-  return {
-    title: o.title,
-    summary: o.summary === undefined ? undefined : o.summary,
-  };
 }
 
 @Injectable()
@@ -94,6 +53,8 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     private readonly instructionDetector: InstructionDetectorService,
     private readonly memoryService: MemoryService,
     private readonly sessionService: SessionService,
+    private readonly actionExecutor: LarkActionExecutorService,
+    private readonly replyService: LarkReplyService,
     private readonly docService: LarkDocService,
     private readonly slidesService: LarkSlidesService,
     private readonly broadService: LarkBroadService,
@@ -116,6 +77,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.docService.initClient(this.client);
     this.slidesService.initClient(this.client);
     this.broadService.initClient(this.client);
+    this.replyService.initClient(this.client);
 
     this.eventDispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => {
@@ -303,7 +265,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
           type: 'LARK_DOC_APPEND',
           params: { documentId: docId, text: instructionForAppend },
         };
-        const actionResult = await this.executeActionInstruction(appendAction);
+        const actionResult = await this.actionExecutor.execute(appendAction);
         const replyText = actionResult
           ? `已按你的说明将内容追加到上一篇云文档。\n\n${actionResult}`
           : '已尝试追加云文档，但未获得执行结果（请确认飞书长连接与 API 已正确配置）。';
@@ -314,13 +276,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         ctx.lastDocId = docId;
         this.userContextMap.set(userId, ctx);
 
-        await this.sendLarkReplyAndPersistAssistant(
+        await this.replyService.sendReplyAndPersistAssistant({
           message,
           senderOpenId,
           userId,
           replyText,
-          'SCENE_DOC',
-        );
+          intentForMemory: 'SCENE_DOC',
+        });
         return;
       }
 
@@ -349,7 +311,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         result.actionInstruction.type !== 'NONE'
       ) {
         this.logger.log(`⚡ 执行动作指令: ${result.actionInstruction.type}`);
-        const actionResult = await this.executeActionInstruction(
+        const actionResult = await this.actionExecutor.execute(
           result.actionInstruction,
         );
         if (actionResult) {
@@ -357,7 +319,8 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
-          const docId = this.extractDocIdFromActionResult(actionResult);
+          const docId =
+            this.actionExecutor.extractDocIdFromActionResult(actionResult);
           if (docId) {
             const context = this.userContextMap.get(userId) || {};
             context.lastDocId = docId;
@@ -372,7 +335,10 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
 
         if (result.actionInstruction.type === 'LARK_BOARD_CREATE') {
-          const wbId = this.extractWhiteboardIdFromActionResult(actionResult);
+          const wbId =
+            this.actionExecutor.extractWhiteboardIdFromActionResult(
+              actionResult,
+            );
           if (wbId) {
             const context = this.userContextMap.get(userId) || {};
             context.lastWhiteboardId = wbId;
@@ -419,13 +385,13 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      await this.sendLarkReplyAndPersistAssistant(
+      await this.replyService.sendReplyAndPersistAssistant({
         message,
         senderOpenId,
         userId,
         replyText,
-        result.intent,
-      );
+        intentForMemory: result.intent,
+      });
     } catch (error) {
       if (message.message_id) {
         this.processedMessageTimestamps.delete(message.message_id);
@@ -433,320 +399,6 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
       }
       this.logger.error('❌ 处理飞书消息失败:', error);
     }
-  }
-
-  /** 发送回复并写入 assistant 轮次（含记忆 intent） */
-  private async sendLarkReplyAndPersistAssistant(
-    message: LarkWebhookMessage,
-    senderOpenId: string | undefined,
-    userId: string,
-    replyText: string,
-    intentForMemory: string,
-  ): Promise<void> {
-    if (!senderOpenId && !message.message_id) {
-      this.logger.warn('⚠️ 缺少 open_id 和 message_id，无法发送卡片');
-      return;
-    }
-
-    this.logger.debug(`📨 回复内容预览: ${replyText.slice(0, 300)}`);
-    this.logger.log(`💬 准备发送卡片: ${message.message_id || 'unknown'}`);
-
-    if (message.message_id) {
-      this.logger.log(`📢 使用 reply 方法回复消息: ${message.message_id}`);
-      await this.reply(message.message_id, replyText);
-    } else if (message.chat_id) {
-      this.logger.log(`📢 消息来自群聊，发送到群聊: ${message.chat_id}`);
-      await this.sendCardToChat(message.chat_id, {
-        message: replyText,
-      });
-    } else if (senderOpenId) {
-      this.logger.log(`💬 消息来自私聊，发送到私聊: ${senderOpenId}`);
-      await this.sendCardToUser(senderOpenId, {
-        message: replyText,
-      });
-    }
-
-    this.logger.log(`✅ 卡片发送完成: ${message.message_id || 'unknown'}`);
-
-    await this.memoryService.addConversationTurn(
-      userId,
-      'assistant',
-      replyText,
-      {
-        messageId: message.message_id,
-        intent: intentForMemory,
-      },
-    );
-  }
-
-  private extractDocIdFromActionResult(actionResult: string): string | null {
-    const urlMatch = actionResult.match(
-      /https:\/\/feishu\.cn\/docx\/([A-Za-z0-9]+)/i,
-    );
-    return urlMatch ? urlMatch[1] : null;
-  }
-
-  /** 云文档创建目录；与 {@link LarkDocService#createDocument}、`LARK_CLOUD_FOLDER_TOKEN` 一致 */
-  private resolveCloudFolderToken(): string | undefined {
-    const raw = this.configService.get<string>('LARK_CLOUD_FOLDER_TOKEN');
-    return typeof raw === 'string' && raw.trim().length > 0
-      ? raw.trim()
-      : undefined;
-  }
-
-  private async generateContentFromTopic(topic: string): Promise<string> {
-    try {
-      const content = await this.instructionDetector.processInstruction(
-        `生成关于"${topic}"的完整文档内容，包括定义、要点、应用场景和总结，用Markdown格式输出`,
-      );
-      return content || `# ${topic}\n\n关于${topic}的详细内容。`;
-    } catch (error) {
-      this.logger.error(`生成主题内容失败: ${(error as Error).message}`);
-      return `# ${topic}\n\n关于${topic}的详细内容。`;
-    }
-  }
-
-  private async executeActionInstruction(
-    action: ActionInstruction,
-  ): Promise<string> {
-    if (!this.client || action.type === 'NONE') {
-      return '';
-    }
-
-    try {
-      const cloudFolderToken = this.resolveCloudFolderToken();
-
-      switch (action.type) {
-        case 'LARK_DOC_CREATE': {
-          const doc = await this.docService.createDocument(
-            action.params.title,
-            cloudFolderToken,
-          );
-          const docUrl =
-            doc.url && doc.url.startsWith('http')
-              ? doc.url
-              : `https://feishu.cn/docx/${doc.documentId}`;
-          if (action.params.summary) {
-            const contentToWrite =
-              action.params.summary.length <= 20
-                ? await this.generateContentFromTopic(action.params.summary)
-                : action.params.summary;
-            await this.docService.appendMarkdownToDocument(
-              doc.documentId,
-              contentToWrite,
-            );
-          }
-          return `📄 文档已创建：${docUrl}`;
-        }
-
-        case 'LARK_DOC_APPEND': {
-          const documentId = action.params.documentId.trim();
-          const generatedContent =
-            await this.instructionDetector.processInstruction(
-              action.params.text,
-              `用户正在操作的文档ID: ${documentId}`,
-            );
-          const docResult = await this.docService.appendMarkdownToDocument(
-            documentId,
-            generatedContent,
-          );
-          const docUrl = `https://feishu.cn/docx/${documentId}`;
-          return `📄 已追加到文档：${docUrl}\n（共添加 ${docResult.blockIds.length} 个内容块）`;
-        }
-
-        case 'LARK_PRESENT_CREATE': {
-          const present = await this.slidesService.createPresentation(
-            action.params.title,
-          );
-          return `🖼️ 演示内容已创建：${present.url}`;
-        }
-
-        case 'LARK_WHITEBOARD_APPEND': {
-          const appendResult =
-            await this.broadService.appendMarkdownToWhiteboard(
-              action.params.whiteboardId,
-              action.params.text,
-            );
-          return `🧩 已写入画板（Markdown→文本节点 whiteboard=${action.params.whiteboardId}，共 ${appendResult.nodeIds.length} 个节点）`;
-        }
-
-        case 'LARK_BOARD_CREATE': {
-          if (action.type !== 'LARK_BOARD_CREATE') {
-            return '';
-          }
-          const params = parseLarkBoardCreateParams(
-            Reflect.get(action, 'params'),
-          );
-          if (!params) {
-            return '';
-          }
-          const baseTitle = params.title.trim();
-          const textDocTitle = `${baseTitle}（正文）`;
-          const boardDocTitle = `${baseTitle}（画板）`;
-
-          const textDoc = await this.docService.createDocument(
-            textDocTitle,
-            cloudFolderToken,
-          );
-          const contentToWrite = params.summary
-            ? params.summary.length <= 20
-              ? await this.generateContentFromTopic(params.summary)
-              : params.summary
-            : undefined;
-          if (contentToWrite) {
-            await this.docService.appendMarkdownToDocument(
-              textDoc.documentId,
-              contentToWrite,
-            );
-          }
-
-          const board = await this.broadService.createDocumentWithBoard(
-            boardDocTitle,
-            contentToWrite,
-            cloudFolderToken,
-          );
-
-          const textUrl =
-            textDoc.url && textDoc.url.startsWith('http')
-              ? textDoc.url
-              : `https://feishu.cn/docx/${textDoc.documentId}`;
-
-          return [
-            `🎨 已创建正文与画板（两个独立链接）：`,
-            `- 文档（完整正文）：${textUrl}`,
-            `- 画板（含摘要内容，方便浏览与整理）：${board.docUrl}`,
-            `- whiteboard_id=${board.whiteboardId}`,
-          ].join('\n');
-        }
-
-        case 'LARK_DOC_PRESENT_LINK': {
-          const doc = await this.docService.createDocument(
-            action.params.title,
-            cloudFolderToken,
-          );
-
-          if (action.params.summary) {
-            const contentToWrite =
-              action.params.summary.length <= 20
-                ? await this.generateContentFromTopic(action.params.summary)
-                : action.params.summary;
-            await this.docService.appendMarkdownToDocument(
-              doc.documentId,
-              contentToWrite,
-            );
-          }
-
-          const docUrl =
-            doc.url && doc.url.startsWith('http')
-              ? doc.url
-              : `https://feishu.cn/docx/${doc.documentId}`;
-
-          return `📄 已创建文档：${docUrl}`;
-        }
-
-        default:
-          return '';
-      }
-    } catch (error) {
-      this.logger.error(`❌ 执行动作失败: ${action.type}`, error as Error);
-      return `⚠️ 已识别出动作 ${action.type}，但执行失败：${(error as Error).message}`;
-    }
-  }
-
-  private extractWhiteboardIdFromActionResult(
-    actionResult: string,
-  ): string | null {
-    const m = actionResult.match(/whiteboard_id=([A-Za-z0-9_-]+)/);
-    return m ? m[1] : null;
-  }
-
-  private async reply(messageId: string | undefined, text: string) {
-    if (!this.client) {
-      this.logger.warn('飞书客户端未初始化，跳过发送消息');
-      return;
-    }
-
-    if (!messageId) {
-      this.logger.warn('缺少 message_id，无法回复飞书消息');
-      return;
-    }
-
-    await this.client.im.message.reply({
-      path: {
-        message_id: messageId,
-      },
-      data: {
-        msg_type: 'interactive',
-        content: JSON.stringify({
-          config: {
-            wide_screen_mode: true,
-          },
-          elements: [
-            {
-              tag: 'div',
-              text: {
-                content: text || '',
-                tag: 'lark_md',
-              },
-            },
-          ],
-        }),
-      },
-    });
-  }
-
-  async sendCard(params: {
-    receiveId: string;
-    receiveIdType: 'open_id' | 'user_id' | 'chat_id';
-    cardData?: LarkCardData;
-  }) {
-    if (!this.client) {
-      throw new Error('飞书客户端未初始化');
-    }
-
-    this.logger.log(`📤 开始发送卡片: receiveId=${params.receiveId}`);
-
-    await this.client.im.message.create({
-      data: {
-        receive_id: params.receiveId,
-        msg_type: 'interactive',
-        content: JSON.stringify({
-          config: {
-            wide_screen_mode: true,
-          },
-          elements: [
-            {
-              tag: 'div',
-              text: {
-                content: params.cardData?.message ?? '',
-                tag: 'lark_md',
-              },
-            },
-          ],
-        }),
-      },
-      params: {
-        receive_id_type: params.receiveIdType,
-      },
-    });
-
-    this.logger.log(`✅ 卡片发送成功`);
-  }
-
-  async sendCardToUser(openId: string, cardData?: LarkCardData) {
-    return this.sendCard({
-      receiveId: openId,
-      receiveIdType: 'open_id',
-      cardData,
-    });
-  }
-
-  async sendCardToChat(chatId: string, cardData?: LarkCardData) {
-    return this.sendCard({
-      receiveId: chatId,
-      receiveIdType: 'chat_id',
-      cardData,
-    });
   }
 
   async onModuleDestroy() {
