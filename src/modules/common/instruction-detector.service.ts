@@ -56,4 +56,34 @@ export class InstructionDetectorService {
       return `抱歉，无法处理该指令。错误信息：${(error as Error).message}`;
     }
   }
+
+  async generateDocumentMarkdown(
+    instruction: string,
+    context?: string,
+  ): Promise<string> {
+    this.logger.log(`doc_generation_started: ${instruction}`);
+
+    let prompt = `根据以下指令生成完整文档正文，直接输出 Markdown 正文内容：\n"${instruction}"`;
+
+    if (context) {
+      prompt = `用户希望生成一篇完整文档正文。\n背景：${context}\n\n指令：${instruction}\n\n请直接输出可写入飞书文档的 Markdown 正文，不要输出致歉、失败说明、额外解释或围绕任务的对话。`;
+    }
+
+    const response = await this.aiService.generateDocumentMarkdown(prompt);
+    const normalized = response.trim();
+
+    if (!normalized) {
+      this.logger.error('doc_generation_failed: empty markdown content');
+      throw new Error('文档正文生成为空');
+    }
+
+    const invalidPrefixes = ['抱歉', '无法处理', '系统暂时', '错误信息'];
+    if (invalidPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+      this.logger.error('doc_generation_failed: invalid fallback-like content');
+      throw new Error('文档正文生成结果无效');
+    }
+
+    this.logger.log(`指令处理完成，文档正文长度: ${normalized.length}`);
+    return normalized;
+  }
 }

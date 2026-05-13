@@ -8,6 +8,7 @@ describe('LarkActionExecutorService', () => {
 
   const instructionDetector = {
     processInstruction: jest.fn(),
+    generateDocumentMarkdown: jest.fn(),
   };
 
   const docService = {
@@ -45,8 +46,8 @@ describe('LarkActionExecutorService', () => {
     });
   });
 
-  it('should expand a single-line long topic into document content', async () => {
-    instructionDetector.processInstruction.mockResolvedValueOnce(
+  it('should generate markdown before creating document', async () => {
+    instructionDetector.generateDocumentMarkdown.mockResolvedValueOnce(
       '# 发布说明\n\n这里是正文。',
     );
 
@@ -58,8 +59,15 @@ describe('LarkActionExecutorService', () => {
       },
     });
 
-    expect(instructionDetector.processInstruction).toHaveBeenCalledWith(
+    expect(instructionDetector.generateDocumentMarkdown).toHaveBeenCalledWith(
       '生成关于"面向程序员群体、核心更新为消息批量删除功能的版本发布文档"的完整文档内容，包括定义、要点、应用场景和总结，用Markdown格式输出',
+    );
+    expect(
+      instructionDetector.generateDocumentMarkdown.mock.invocationCallOrder[0],
+    ).toBeLessThan(docService.createDocument.mock.invocationCallOrder[0]);
+    expect(docService.createDocument).toHaveBeenCalledWith(
+      '版本发布文档',
+      undefined,
     );
     expect(docService.appendMarkdownToDocument).toHaveBeenCalledWith(
       'doc_test_123',
@@ -76,10 +84,29 @@ describe('LarkActionExecutorService', () => {
       },
     });
 
-    expect(instructionDetector.processInstruction).not.toHaveBeenCalled();
+    expect(instructionDetector.generateDocumentMarkdown).not.toHaveBeenCalled();
     expect(docService.appendMarkdownToDocument).toHaveBeenCalledWith(
       'doc_test_123',
       '# 标题\n\n- 要点一\n- 要点二',
     );
+  });
+
+  it('should not create document when markdown generation fails', async () => {
+    instructionDetector.generateDocumentMarkdown.mockRejectedValueOnce(
+      new Error('AI timeout'),
+    );
+
+    await expect(
+      service.execute({
+        type: 'LARK_DOC_CREATE',
+        params: {
+          title: '失败文档',
+          summary: '需要扩写的主题',
+        },
+      }),
+    ).rejects.toThrow('AI timeout');
+
+    expect(docService.createDocument).not.toHaveBeenCalled();
+    expect(docService.appendMarkdownToDocument).not.toHaveBeenCalled();
   });
 });

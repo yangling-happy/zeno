@@ -78,6 +78,10 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     this.initLarkWS();
   }
 
+  private isQueueAckEnabled(): boolean {
+    return this.configService.get<string>('LARK_QUEUE_ACK_ENABLED') !== 'false';
+  }
+
   private initLarkWS() {
     const appId = this.configService.get<string>('LARK_APP_ID') || '';
     const appSecret = this.configService.get<string>('LARK_APP_SECRET') || '';
@@ -357,11 +361,47 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         result.actionInstruction.type !== 'NONE'
       ) {
         this.logger.log(`⚡ 执行动作指令: ${result.actionInstruction.type}`);
+
+        if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
+          if (!this.isQueueAckEnabled()) {
+            await this.replyService.sendReplyAndPersistAssistant({
+              message,
+              senderOpenId,
+              userId,
+              replyText,
+              intentForMemory: result.intent,
+            });
+            this.logger.log('final_reply_sent: doc progress reply sent');
+          } else {
+            this.logger.log(
+              'doc_generation_started: queue ack already sent as progress reply',
+            );
+          }
+          replyText = '';
+        }
+
         const actionResult = await this.actionExecutor.execute(
           result.actionInstruction,
         );
         if (actionResult) {
-          replyText = `${replyText}\n\n${actionResult}`;
+          if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
+            replyText = actionResult;
+          } else {
+            replyText = `${replyText}\n\n${actionResult}`;
+          }
+        } else if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
+          replyText = '文档生成失败，请稍后重试。';
+        }
+
+        if (result.actionInstruction.type === 'LARK_DOC_CREATE' && replyText) {
+          await this.replyService.sendReplyAndPersistAssistant({
+            message,
+            senderOpenId,
+            userId,
+            replyText,
+            intentForMemory: result.intent,
+          });
+          this.logger.log('final_reply_sent');
         }
 
         if (result.actionInstruction.type === 'LARK_DOC_CREATE') {
@@ -372,6 +412,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
             context.lastDocId = docId;
             this.userContextMap.set(userId, context);
           }
+          return;
         }
 
         if (result.actionInstruction.type === 'LARK_DOC_APPEND') {
@@ -462,9 +503,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     message: LarkWebhookMessage,
     senderOpenId?: string,
   ): Promise<void> {
-    const ackEnabled =
-      this.configService.get<string>('LARK_QUEUE_ACK_ENABLED') !== 'false';
-    if (!ackEnabled) {
+    if (!this.isQueueAckEnabled()) {
       return;
     }
 

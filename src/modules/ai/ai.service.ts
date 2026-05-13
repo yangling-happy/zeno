@@ -17,6 +17,15 @@ interface ArkChatCompletionResponse {
   };
 }
 
+type AiRetryOptions = {
+  maxRetries: number;
+  timeoutMs: number;
+  retryBaseDelayMs: number;
+  tpmRetryDelayMs: number;
+  operationName: string;
+  successLog?: string;
+};
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -27,44 +36,88 @@ export class AiService {
   }
 
   async chatOrThrow(text: string): Promise<string> {
-    let lastError: Error | null = null;
-    const maxRetries = this.getNumber('AI_MAX_RETRIES', 1);
+    return this.completeWithRetry(text, {
+      maxRetries: this.getNumber('AI_MAX_RETRIES', 1),
+      timeoutMs: this.getNumber('AI_TIMEOUT_MS', 45000),
+      retryBaseDelayMs: this.getNumber('AI_RETRY_BASE_DELAY_MS', 500),
+      tpmRetryDelayMs: this.getNumber('AI_TPM_RETRY_DELAY_MS', 1500),
+      operationName: 'chat',
+    });
+  }
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+  async generateDocumentMarkdown(prompt: string): Promise<string> {
+    this.logger.log('doc_generation_started');
+    try {
+      const content = await this.completeWithRetry(prompt, {
+        maxRetries: this.getNumber('AI_DOC_MAX_RETRIES', 3),
+        timeoutMs: this.getNumber('AI_DOC_TIMEOUT_MS', 90000),
+        retryBaseDelayMs: this.getNumber('AI_DOC_RETRY_BASE_DELAY_MS', 1000),
+        tpmRetryDelayMs: this.getNumber('AI_DOC_TPM_RETRY_DELAY_MS', 3000),
+        operationName: 'document generation',
+        successLog: 'doc_generation_succeeded',
+      });
+      return content;
+    } catch (error) {
+      this.logger.error(`doc_generation_failed: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+  private async completeWithRetry(
+    text: string,
+    options: AiRetryOptions,
+  ): Promise<string> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < options.maxRetries; attempt++) {
       try {
-        return await this.fetchWithTimeout(text);
+        const content = await this.fetchWithTimeout(text, options.timeoutMs);
+        if (options.successLog) {
+          this.logger.log(options.successLog);
+        }
+        return content;
       } catch (error) {
         lastError = error as Error;
         this.logger.warn(
-          `AI 调用失败 (尝试 ${attempt + 1}/${maxRetries}): ${lastError.message}`,
+          `AI ${options.operationName} failed (尝试 ${attempt + 1}/${options.maxRetries}): ${lastError.message}`,
         );
 
-        // 判断是否为 TPM 限制错误
         const isTPMLimit =
           lastError.message.includes('Tokens Per Minute') ||
           lastError.message.includes('TPM') ||
           lastError.message.includes('rate_limit');
 
-        if (attempt < maxRetries - 1) {
+        if (attempt < options.maxRetries - 1) {
           const delay = isTPMLimit
-            ? this.getNumber('AI_TPM_RETRY_DELAY_MS', 1500)
-            : this.getNumber('AI_RETRY_BASE_DELAY_MS', 500) *
-                Math.pow(2, attempt) +
+            ? options.tpmRetryDelayMs
+            : options.retryBaseDelayMs * Math.pow(2, attempt) +
               Math.random() * 250;
 
-          this.logger.log(
-            `${isTPMLimit ? 'TPM 限制' : '正常'} - 等待 ${delay / 1000} 秒后重试...`,
-          );
+          if (options.operationName === 'document generation') {
+            this.logger.warn(
+              `doc_generation_retrying: attempt=${attempt + 2}/${options.maxRetries}, delay_ms=${Math.round(delay)}, reason=${lastError.message}`,
+            );
+          } else {
+            this.logger.log(
+              `${isTPMLimit ? 'TPM 限制' : '正常'} - 等待 ${delay / 1000} 秒后重试...`,
+            );
+          }
+
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
 
-    this.logger.error(`AI 调用完全失败: ${lastError?.message}`);
+    this.logger.error(
+      `AI ${options.operationName} completely failed: ${lastError?.message}`,
+    );
     throw lastError || new Error('AI 调用失败');
   }
 
-  private async fetchWithTimeout(text: string): Promise<string> {
+  private async fetchWithTimeout(
+    text: string,
+    timeout: number,
+  ): Promise<string> {
     const apiKey = this.configService.get<string>('ARK_API_KEY') || '';
     const model =
       this.configService.get<string>('ARK_MODEL') ||
@@ -78,8 +131,6 @@ export class AiService {
       throw new Error('ARK_API_KEY 或 ARK_MODEL 未配置');
     }
 
-    // 超时控制
-    const timeout = this.getNumber('AI_TIMEOUT_MS', 45000);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 

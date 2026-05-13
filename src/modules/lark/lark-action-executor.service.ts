@@ -49,23 +49,30 @@ export class LarkActionExecutorService {
 
       switch (action.type) {
         case 'LARK_DOC_CREATE': {
+          const contentToWrite = action.params.summary
+            ? await this.resolveDocumentContent(action.params.summary)
+            : undefined;
+
+          this.logger.log(`doc_create_started: title=${action.params.title}`);
           const doc = await this.docService.createDocument(
             action.params.title,
             cloudFolderToken,
           );
+          this.logger.log(`doc_create_succeeded: documentId=${doc.documentId}`);
+
           const docUrl =
             doc.url && doc.url.startsWith('http')
               ? doc.url
               : `https://feishu.cn/docx/${doc.documentId}`;
-          if (action.params.summary) {
-            const contentToWrite = shouldExpandTopicToContent(
-              action.params.summary,
-            )
-              ? await this.generateContentFromTopic(action.params.summary)
-              : action.params.summary;
+
+          if (contentToWrite) {
+            this.logger.log(`doc_write_started: documentId=${doc.documentId}`);
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
               contentToWrite,
+            );
+            this.logger.log(
+              `doc_write_succeeded: documentId=${doc.documentId}`,
             );
           }
           return `📄 文档已创建：${docUrl}`;
@@ -119,7 +126,7 @@ export class LarkActionExecutorService {
           );
           const contentToWrite = params.summary
             ? params.summary.length <= 20
-              ? await this.generateContentFromTopic(params.summary)
+              ? await this.resolveDocumentContent(params.summary)
               : params.summary
             : undefined;
           if (contentToWrite) {
@@ -158,7 +165,7 @@ export class LarkActionExecutorService {
             const contentToWrite = shouldExpandTopicToContent(
               action.params.summary,
             )
-              ? await this.generateContentFromTopic(action.params.summary)
+              ? await this.resolveDocumentContent(action.params.summary)
               : action.params.summary;
             await this.docService.appendMarkdownToDocument(
               doc.documentId,
@@ -179,7 +186,7 @@ export class LarkActionExecutorService {
       }
     } catch (error) {
       this.logger.error(`❌ 执行动作失败: ${action.type}`, error as Error);
-      return `⚠️ 已识别出动作 ${action.type}，但执行失败：${(error as Error).message}`;
+      throw error;
     }
   }
 
@@ -202,15 +209,14 @@ export class LarkActionExecutorService {
       : undefined;
   }
 
-  private async generateContentFromTopic(topic: string): Promise<string> {
-    try {
-      const content = await this.instructionDetector.processInstruction(
-        `生成关于"${topic}"的完整文档内容，包括定义、要点、应用场景和总结，用Markdown格式输出`,
-      );
-      return content || `# ${topic}\n\n关于${topic}的详细内容。`;
-    } catch (error) {
-      this.logger.error(`生成主题内容失败: ${(error as Error).message}`);
-      return `# ${topic}\n\n关于${topic}的详细内容。`;
+  private async resolveDocumentContent(summary: string): Promise<string> {
+    if (!shouldExpandTopicToContent(summary)) {
+      return summary;
     }
+
+    const content = await this.instructionDetector.generateDocumentMarkdown(
+      `生成关于"${summary}"的完整文档内容，包括定义、要点、应用场景和总结，用Markdown格式输出`,
+    );
+    return content;
   }
 }

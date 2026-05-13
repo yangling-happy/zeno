@@ -140,6 +140,7 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest.fn().mockResolvedValue(''),
           },
         },
         {
@@ -223,6 +224,7 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest.fn().mockResolvedValue(''),
           },
         },
         {
@@ -353,6 +355,7 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest.fn().mockResolvedValue(''),
           },
         },
         {
@@ -438,6 +441,7 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest.fn().mockResolvedValue(''),
           },
         },
         {
@@ -512,6 +516,7 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest.fn().mockResolvedValue(''),
           },
         },
         {
@@ -563,7 +568,7 @@ describe('LarkService', () => {
     const agentRunMock = jest.fn().mockResolvedValue({
       intent: 'SCENE_DOC',
       confidence: 0.98,
-      response: '已识别为文档协作请求',
+      response: '我正在为你生成文档正文，完成后会把飞书文档链接回给你。',
       trace: ['normalize_input', 'intent_classifier', 'doc_node'],
       actionInstruction: {
         type: 'LARK_DOC_CREATE',
@@ -605,6 +610,9 @@ describe('LarkService', () => {
           useValue: {
             isInstruction: jest.fn().mockResolvedValue(false),
             processInstruction: jest.fn().mockResolvedValue(''),
+            generateDocumentMarkdown: jest
+              .fn()
+              .mockResolvedValue('# 测试文档\n\n测试摘要'),
           },
         },
         {
@@ -667,8 +675,21 @@ describe('LarkService', () => {
 
     expect(larkDocService.createDocument).toHaveBeenCalledTimes(1);
     expect(larkDocService.appendMarkdownToDocument).toHaveBeenCalledTimes(1);
-    expect(replyMock).toHaveBeenCalledTimes(1);
-    const replyPayload = replyMock.mock.calls[0][0];
+    expect(replyMock).toHaveBeenCalledTimes(2);
+
+    const progressPayload = replyMock.mock.calls[0][0];
+    expect(progressPayload.path.message_id).toBe('om_doc_create_test_id');
+    expect(progressPayload.data.msg_type).toBe('interactive');
+    const progressContent = JSON.parse(progressPayload.data.content) as {
+      elements: Array<{
+        text: {
+          content: string;
+        };
+      }>;
+    };
+    expect(progressContent.elements[0].text.content).toContain('生成');
+
+    const replyPayload = replyMock.mock.calls[1][0];
     expect(replyPayload.path.message_id).toBe('om_doc_create_test_id');
     expect(replyPayload.data.msg_type).toBe('interactive');
 
