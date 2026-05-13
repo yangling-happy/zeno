@@ -2,7 +2,7 @@
 
 # Zeno
 
-企业级智能对话平台，集成飞书消息接入、多模态大模型能力、长时记忆管理系统。
+基于 IM 的办公协同智能助手，集成飞书消息接入、意图路由、文档/白板动作执行和对话记忆能力。
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -13,7 +13,6 @@
   <img src="https://img.shields.io/badge/飞书-3387FF?style=flat-square&logo=&logoColor=white" />
   <img src="https://img.shields.io/badge/ARK-4253E8?style=flat-square" />
   <img src="https://img.shields.io/badge/Ollama-FF6B35?style=flat-square&logo=ollama&logoColor=white" />
-  <img src="https://img.shields.io/badge/pgvector-336791?style=flat-square" />
 </p>
 
 </div>
@@ -35,9 +34,15 @@
 
 ## 核心功能
 
-### 意图识别与技能系统
+### IM 消息接入与异步处理
 
-精准的意图分类，覆盖任务规划、文档编辑、画板协作、演示汇报、多端协同、总结交付、身份查询、安全拒答、意图澄清等 9 大类别。
+- 基于飞书长连接接收 IM 消息
+- 消息入队后异步消费，降低模型调用和文档写入对主流程的阻塞
+- 支持排队确认、失败重试和重复消息去重
+
+### 意图路由与场景回复
+
+支持将用户请求路由到任务规划、文档处理、画板/演示、多端同步、总结交付、身份问答、安全拒答、意图澄清和闲聊等场景。
 
 | 意图类型       | 说明           |
 | -------------- | -------------- |
@@ -51,22 +56,22 @@
 | CLARIFY        | 意图模糊需追问 |
 | CHITCHAT       | 基础闲聊       |
 
-### 三层记忆架构
+### 对话上下文与事实存储
 
 ```
 用户输入
     │
     ▼
 ┌─────────────────┐
-│   Redis Cache   │ ← 即时上下文（最近对话）
+│   Redis Cache   │ ← 最近对话
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  PostgreSQL     │ ← 长期历史（结构化存储）
+│  PostgreSQL     │ ← 对话历史与事实片段
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│   pgvector      │ ← 向量检索（语义搜索事实）
+│ Ollama Embedding│ ← 为提取出的事实生成向量
 └─────────────────┘
 ```
 
@@ -76,11 +81,18 @@
 - **FactSnippet**: 提取的事实片段（userId, content, category, embedding）
 - **UserSession**: 用户会话状态（sessionData, lastActive）
 
-### 飞书集成
+### 飞书办公对象操作
 
 - 飞书 SDK 长连接消息接入
-- 文档、画板、演示文稿创建
-- 富媒体支持
+- 云文档创建与追加
+- 画板创建与 Markdown 内容写入
+- 演示文稿创建
+
+### 稳定性与可观测性
+
+- AI 调用超时与重试处理
+- 队列重试和 worker 并发控制
+- OpenTelemetry 链路追踪
 
 ---
 
@@ -175,9 +187,11 @@ pnpm run start:dev
 ```
 src/
 ├── modules/
-│   ├── lark/          # 飞书消息接入模块
-│   ├── agent/         # 智能代理模块
-│   ├── memory/        # 记忆管理模块
+│   ├── lark/          # 飞书 IM 与办公对象操作
+│   ├── agent/         # 意图路由与 Agent 流程
+│   ├── memory/        # 最近上下文与事实存储
+│   ├── queue/         # 异步消息队列与 worker
+│   ├── ai/            # 模型调用封装
 │   └── common/        # 公共组件
 └── main.ts            # 应用入口
 ```
@@ -198,15 +212,16 @@ src/
 
 ## 技术栈
 
-| 类别    | 技术                    |
-| ------- | ----------------------- |
-| 框架    | NestJS                  |
-| 语言    | TypeScript              |
-| 数据库  | PostgreSQL + pgvector   |
-| 缓存    | Redis                   |
-| ORM     | Prisma                  |
-| AI 能力 | 字节跳动 ARK、Ollama    |
-| 部署    | Docker / Docker Compose |
+| 类别     | 技术                            |
+| -------- | ------------------------------- |
+| 框架     | NestJS                          |
+| 语言     | TypeScript                      |
+| 存储     | PostgreSQL、Redis               |
+| ORM      | Prisma                          |
+| AI 能力  | 字节跳动 ARK、Ollama Embeddings |
+| 队列     | BullMQ                          |
+| 可观测性 | OpenTelemetry、Jaeger           |
+| 部署     | Docker / Docker Compose         |
 
 ---
 

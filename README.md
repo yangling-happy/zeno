@@ -2,7 +2,7 @@
 
 # Zeno
 
-Enterprise-grade intelligent dialogue platform integrating Feishu messaging, multi-modal LLM capabilities, and long-term memory management.
+IM-based office collaboration intelligent assistant integrating Feishu messaging, intent routing, document/whiteboard actions, and conversation memory.
 
 **English** · [简体中文](./README.zh-CN.md)
 
@@ -13,7 +13,6 @@ Enterprise-grade intelligent dialogue platform integrating Feishu messaging, mul
   <img src="https://img.shields.io/badge/Feishu-3387FF?style=flat-square&logo=&logoColor=white" />
   <img src="https://img.shields.io/badge/ARK-4253E8?style=flat-square" />
   <img src="https://img.shields.io/badge/Ollama-FF6B35?style=flat-square&logo=ollama&logoColor=white" />
-  <img src="https://img.shields.io/badge/pgvector-336791?style=flat-square" />
 </p>
 
 </div>
@@ -35,9 +34,15 @@ Enterprise-grade intelligent dialogue platform integrating Feishu messaging, mul
 
 ## Features
 
-### Intent Recognition & Skill System
+### IM Message Access & Async Processing
 
-Accurate intent classification with 9 skill categories covering task planning, documentation, whiteboard collaboration, presentation, cross-device sync, delivery, identity queries, safety responses, and clarification.
+- Receive Feishu IM messages through long connection
+- Push incoming messages into BullMQ for async consumption
+- Send queued acknowledgment, retry failed jobs, and avoid duplicate processing
+
+### Intent Routing & Scene Reply
+
+Route user requests into planning, documentation, whiteboard/presentation, sync, delivery, identity, safety, clarification, and chitchat scenes.
 
 | Intent         | Description                    |
 | -------------- | ------------------------------ |
@@ -51,22 +56,22 @@ Accurate intent classification with 9 skill categories covering task planning, d
 | CLARIFY        | Ambiguous intent clarification |
 | CHITCHAT       | Casual conversation            |
 
-### Three-tier Memory Architecture
+### Conversation Context & Fact Persistence
 
 ```
 User Input
     │
     ▼
 ┌─────────────────┐
-│   Redis Cache   │ ← Immediate context (recent conversations)
+│   Redis Cache   │ ← Recent conversations
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  PostgreSQL     │ ← Long-term history (structured storage)
+│  PostgreSQL     │ ← Conversation history & fact snippets
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│   pgvector      │ ← Vector search (semantic fact retrieval)
+│ Ollama Embedding│ ← Generate embeddings for extracted facts
 └─────────────────┘
 ```
 
@@ -76,11 +81,18 @@ User Input
 - **FactSnippet**: Extracted facts (userId, content, category, embedding)
 - **UserSession**: User session state (sessionData, lastActive)
 
-### Feishu Integration
+### Feishu Workspace Actions
 
 - Long connection messaging via Feishu SDK
-- Document, whiteboard, and presentation creation
-- Rich media support
+- Document creation and append
+- Whiteboard creation and markdown-to-node writing
+- Presentation creation
+
+### Stability & Observability
+
+- AI timeout and retry handling
+- Queue retry and worker concurrency control
+- OpenTelemetry tracing support
 
 ---
 
@@ -175,9 +187,11 @@ pnpm run start:dev
 ```
 src/
 ├── modules/
-│   ├── lark/          # Feishu messaging module
-│   ├── agent/         # Intelligent agent module
-│   ├── memory/        # Memory management module
+│   ├── lark/          # Feishu IM and workspace actions
+│   ├── agent/         # Intent routing and agent loop
+│   ├── memory/        # Recent context and fact persistence
+│   ├── queue/         # Async message queue and worker
+│   ├── ai/            # Model invocation wrapper
 │   └── common/        # Shared utilities
 └── main.ts            # Application entry
 ```
@@ -198,15 +212,16 @@ src/
 
 ## Tech Stack
 
-| Category   | Technologies            |
-| ---------- | ----------------------- |
-| Framework  | NestJS                  |
-| Language   | TypeScript              |
-| Database   | PostgreSQL + pgvector   |
-| Cache      | Redis                   |
-| ORM        | Prisma                  |
-| AI         | ByteDance ARK, Ollama   |
-| Deployment | Docker / Docker Compose |
+| Category      | Technologies                     |
+| ------------- | -------------------------------- |
+| Framework     | NestJS                           |
+| Language      | TypeScript                       |
+| Storage       | PostgreSQL, Redis                |
+| ORM           | Prisma                           |
+| AI            | ByteDance ARK, Ollama Embeddings |
+| Queue         | BullMQ                           |
+| Observability | OpenTelemetry, Jaeger            |
+| Deployment    | Docker / Docker Compose          |
 
 ---
 
