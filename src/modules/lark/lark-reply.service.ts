@@ -1,10 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { MemoryService } from '../memory/memory.service';
-import { LarkCardData, LarkWebhookMessage } from './lark.types';
+import {
+  LarkCardData,
+  LarkQueuedAckSender,
+  LarkWebhookMessage,
+} from './lark.types';
 
 @Injectable()
-export class LarkReplyService {
+export class LarkReplyService implements LarkQueuedAckSender {
   private readonly logger = new Logger(LarkReplyService.name);
   private client: Lark.Client | null = null;
 
@@ -58,6 +62,27 @@ export class LarkReplyService {
         intent: intentForMemory,
       },
     );
+  }
+
+  async sendQueuedProcessingAcknowledgment(
+    message: Pick<LarkWebhookMessage, 'message_id' | 'chat_id'>,
+    senderOpenId?: string,
+  ): Promise<void> {
+    const text = '已收到你的消息，正在后台处理中，请稍候。';
+
+    if (message.message_id) {
+      await this.reply(message.message_id, text);
+      return;
+    }
+
+    if (message.chat_id) {
+      await this.sendCardToChat(message.chat_id, { message: text });
+      return;
+    }
+
+    if (senderOpenId) {
+      await this.sendCardToUser(senderOpenId, { message: text });
+    }
   }
 
   private async reply(messageId: string | undefined, text: string) {

@@ -1,8 +1,10 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as Lark from '@larksuiteoapi/node-sdk';
@@ -13,7 +15,7 @@ import { LarkDocService } from './doc/lark-doc.service';
 import { LarkActionExecutorService } from './lark-action-executor.service';
 import { LarkReplyService } from './lark-reply.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
-import { LarkWebhookMessage } from './lark.types';
+import { LarkQueuedAckSender, LarkWebhookMessage } from './lark.types';
 import { InstructionDetectorService } from '../common/instruction-detector.service';
 import { mergeVisibleAndLarkJsonForDocOps } from '../common/lark-doc-haystack.utils';
 import {
@@ -23,9 +25,19 @@ import {
 import { shouldAppendToLastLarkDoc } from '../common/lark-doc-append.utils';
 import { MemoryService } from '../memory/memory.service';
 import { SessionService } from '../agent/session/session.service';
+import {
+  LarkMessageJobData,
+  LarkMessageQueue,
+} from '../queue/lark-message.queue';
 
 interface StoppableWsClient {
   stop?: () => void | Promise<void>;
+}
+
+interface QueueProcessingContext {
+  jobId?: string;
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 @Injectable()
@@ -58,6 +70,8 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     private readonly docService: LarkDocService,
     private readonly slidesService: LarkSlidesService,
     private readonly broadService: LarkBroadService,
+    @Inject(forwardRef(() => LarkMessageQueue))
+    private readonly messageQueue: LarkMessageQueue,
   ) {}
 
   onModuleInit() {
@@ -104,9 +118,7 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
           }
 
           this.logger.log(`📩 收到消息: ${text}`);
-
-          // 这里不要阻塞事件回调，避免因为 AI 调用耗时导致飞书重试同一条事件。
-          void this.processMessage(message, text, senderOpenId);
+          void this.enqueueIncomingMessage(message, text, senderOpenId);
         } catch (error) {
           this.logger.error('❌ 处理消息事件失败:', error);
         }
@@ -208,12 +220,46 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async processMessage(
+  private async enqueueIncomingMessage(
     message: LarkWebhookMessage,
     text: string,
     senderOpenId?: string,
+  ): Promise<void> {
+    try {
+      const { jobId, wasAdded } = await this.messageQueue.enqueueMessage({
+        message,
+        senderOpenId,
+        text,
+        receivedAt: Date.now(),
+      });
+
+      if (!wasAdded) {
+        this.logger.warn(`队列中已存在相同消息，跳过重复入队: ${jobId}`);
+        return;
+      }
+
+      this.logger.log(`消息已入队: job=${jobId} message=${message.message_id}`);
+      await this.sendQueuedAck(message, senderOpenId);
+    } catch (error) {
+      if (message.message_id) {
+        this.processedMessageTimestamps.delete(message.message_id);
+      }
+      this.logger.error('❌ 飞书消息入队失败:', error);
+      await this.sendFinalFailureReply(message, senderOpenId, '入队失败');
+    }
+  }
+
+  async handleQueuedMessage(
+    payload: LarkMessageJobData,
+    queueContext?: QueueProcessingContext,
   ) {
+    const { message, text, senderOpenId } = payload;
     this.logger.log(`📋 开始处理消息: ${message.message_id || 'unknown'}`);
+    if (queueContext?.jobId) {
+      this.logger.log(
+        `🧵 队列上下文: job=${queueContext.jobId}, attempt=${queueContext.attempt}/${queueContext.maxAttempts || '?'}`,
+      );
+    }
     const userId = senderOpenId || 'anonymous';
 
     try {
@@ -397,7 +443,55 @@ export class LarkService implements OnModuleInit, OnModuleDestroy {
         this.processedMessageTimestamps.delete(message.message_id);
         this.logger.warn(`♻️ 释放消息去重标记: ${message.message_id}`);
       }
-      this.logger.error('❌ 处理飞书消息失败:', error);
+      this.logger.error(
+        `❌ 处理飞书消息失败: job=${queueContext?.jobId || 'unknown'}`,
+        error,
+      );
+      const isLastAttempt =
+        !!queueContext?.maxAttempts &&
+        (queueContext.attempt || 1) >= queueContext.maxAttempts;
+      if (isLastAttempt) {
+        await this.sendFinalFailureReply(message, senderOpenId);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async sendQueuedAck(
+    message: LarkWebhookMessage,
+    senderOpenId?: string,
+  ): Promise<void> {
+    const ackEnabled =
+      this.configService.get<string>('LARK_QUEUE_ACK_ENABLED') !== 'false';
+    if (!ackEnabled) {
+      return;
+    }
+
+    try {
+      await (
+        this.replyService as LarkQueuedAckSender
+      ).sendQueuedProcessingAcknowledgment(message, senderOpenId);
+    } catch (error) {
+      this.logger.warn(`发送排队确认消息失败: ${(error as Error).message}`);
+    }
+  }
+
+  private async sendFinalFailureReply(
+    message: LarkWebhookMessage,
+    senderOpenId?: string,
+    reason: string = '处理失败',
+  ): Promise<void> {
+    try {
+      await this.replyService.sendReplyAndPersistAssistant({
+        message,
+        senderOpenId,
+        userId: senderOpenId || 'anonymous',
+        replyText: `系统暂时无法完成这条请求（${reason}），请稍后重试。`,
+        intentForMemory: 'FAILED',
+      });
+    } catch (error) {
+      this.logger.error(`发送最终降级回复失败: ${(error as Error).message}`);
     }
   }
 

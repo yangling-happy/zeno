@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AgentModule } from '../agent/agent.module';
 import { SessionModule } from '../agent/session/session.module';
 import { CommonModule } from '../common/common.module';
 import { MemoryModule } from '../memory/memory.module';
+import { QueueModule } from '../queue/queue.module';
 import { LarkActionExecutorService } from './lark-action-executor.service';
 import { LarkBroadModule } from './broad/lark-broad.module';
 import { LarkDocModule } from './doc/lark-doc.module';
@@ -16,6 +17,7 @@ import { LarkSlidesModule } from './slides/lark-slides.module';
     SessionModule,
     CommonModule,
     MemoryModule,
+    forwardRef(() => QueueModule),
     LarkDocModule,
     LarkSlidesModule,
     LarkBroadModule,

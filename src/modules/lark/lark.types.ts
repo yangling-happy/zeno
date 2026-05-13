@@ -20,3 +20,10 @@ export interface LarkWebhookEvent {
 export interface LarkCardData {
   message?: string;
 }
+
+export interface LarkQueuedAckSender {
+  sendQueuedProcessingAcknowledgment(
+    message: Pick<LarkWebhookMessage, 'message_id' | 'chat_id'>,
+    senderOpenId?: string,
+  ): Promise<void>;
+}

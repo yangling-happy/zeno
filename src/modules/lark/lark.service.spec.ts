@@ -8,6 +8,10 @@ import { LarkDocService } from './doc/lark-doc.service';
 import { LarkReplyService } from './lark-reply.service';
 import { LarkService } from './lark.service';
 import { LarkSlidesService } from './slides/lark-slides.service';
+import {
+  LarkMessageJobData,
+  LarkMessageQueue,
+} from '../queue/lark-message.queue';
 import { MemoryService } from '../memory/memory.service';
 import { SessionService } from '../agent/session/session.service';
 
@@ -39,6 +43,20 @@ const docBlockCreateMock = jest.fn().mockResolvedValue({
 });
 const flushPromises = () =>
   new Promise<void>((resolve) => setImmediate(resolve));
+
+const larkMessageQueueTestDouble = {
+  enqueueMessage: jest.fn(),
+};
+
+function wireImmediateQueueProcessing(service: LarkService) {
+  larkMessageQueueTestDouble.enqueueMessage.mockImplementation(
+    async (data: LarkMessageJobData) => {
+      await service.handleQueuedMessage(data);
+      const jobId = data.message.message_id || `lark-${data.receivedAt}`;
+      return { jobId, wasAdded: true };
+    },
+  );
+}
 
 jest.mock('@larksuiteoapi/node-sdk', () => {
   return {
@@ -86,6 +104,11 @@ describe('LarkService', () => {
     createMock.mockClear();
     docCreateMock.mockClear();
     docBlockCreateMock.mockClear();
+    larkMessageQueueTestDouble.enqueueMessage.mockReset();
+    larkMessageQueueTestDouble.enqueueMessage.mockResolvedValue({
+      jobId: 'mock-job-id',
+      wasAdded: true,
+    });
     jest.clearAllMocks();
   });
 
@@ -101,6 +124,7 @@ describe('LarkService', () => {
             get: (key: string) => {
               if (key === 'LARK_APP_ID') return 'cli_test_app_id';
               if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              if (key === 'LARK_QUEUE_ACK_ENABLED') return 'false';
               return '';
             },
           },
@@ -149,6 +173,10 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
@@ -179,6 +207,7 @@ describe('LarkService', () => {
             get: (key: string) => {
               if (key === 'LARK_APP_ID') return 'cli_test_app_id';
               if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              if (key === 'LARK_QUEUE_ACK_ENABLED') return 'false';
               return '';
             },
           },
@@ -233,11 +262,16 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
     const service = moduleRef.get(LarkService);
 
+    wireImmediateQueueProcessing(service);
     service.onModuleInit();
     registeredHandlers['im.message.receive_v1']({
       message: {
@@ -303,6 +337,7 @@ describe('LarkService', () => {
             get: (key: string) => {
               if (key === 'LARK_APP_ID') return 'cli_test_app_id';
               if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              if (key === 'LARK_QUEUE_ACK_ENABLED') return 'false';
               return '';
             },
           },
@@ -351,11 +386,16 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
     const service = moduleRef.get(LarkService);
 
+    wireImmediateQueueProcessing(service);
     service.onModuleInit();
     registeredHandlers['im.message.receive_v1']({
       message: {
@@ -431,6 +471,10 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
@@ -452,6 +496,7 @@ describe('LarkService', () => {
             get: (key: string) => {
               if (key === 'LARK_APP_ID') return 'cli_test_app_id';
               if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              if (key === 'LARK_QUEUE_ACK_ENABLED') return 'false';
               return '';
             },
           },
@@ -500,6 +545,10 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
@@ -540,6 +589,7 @@ describe('LarkService', () => {
             get: (key: string) => {
               if (key === 'LARK_APP_ID') return 'cli_test_app_id';
               if (key === 'LARK_APP_SECRET') return 'cli_test_app_secret';
+              if (key === 'LARK_QUEUE_ACK_ENABLED') return 'false';
               return '';
             },
           },
@@ -594,11 +644,16 @@ describe('LarkService', () => {
             appendMarkdownToWhiteboard: jest.fn(),
           },
         },
+        {
+          provide: LarkMessageQueue,
+          useValue: larkMessageQueueTestDouble,
+        },
       ],
     }).compile();
 
     const service = moduleRef.get(LarkService);
 
+    wireImmediateQueueProcessing(service);
     service.onModuleInit();
     registeredHandlers['im.message.receive_v1']({
       message: {

@@ -20,22 +20,23 @@ interface ArkChatCompletionResponse {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private readonly maxRetries = 3;
-  private readonly timeout = 600000;
-  private readonly tpmRetryDelayMs = 35000; // TPM限制延迟35秒
-
   constructor(private readonly configService: ConfigService) {}
 
   async chat(text: string): Promise<string> {
-    let lastError: Error | null = null;
+    return this.chatOrThrow(text);
+  }
 
-    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+  async chatOrThrow(text: string): Promise<string> {
+    let lastError: Error | null = null;
+    const maxRetries = this.getNumber('AI_MAX_RETRIES', 1);
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         return await this.fetchWithTimeout(text);
       } catch (error) {
         lastError = error as Error;
         this.logger.warn(
-          `AI 调用失败 (尝试 ${attempt + 1}/${this.maxRetries}): ${lastError.message}`,
+          `AI 调用失败 (尝试 ${attempt + 1}/${maxRetries}): ${lastError.message}`,
         );
 
         // 判断是否为 TPM 限制错误
@@ -44,11 +45,12 @@ export class AiService {
           lastError.message.includes('TPM') ||
           lastError.message.includes('rate_limit');
 
-        if (attempt < this.maxRetries - 1) {
-          // TPM 限制需要更长的等待时间
+        if (attempt < maxRetries - 1) {
           const delay = isTPMLimit
-            ? this.tpmRetryDelayMs
-            : Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+            ? this.getNumber('AI_TPM_RETRY_DELAY_MS', 1500)
+            : this.getNumber('AI_RETRY_BASE_DELAY_MS', 500) *
+                Math.pow(2, attempt) +
+              Math.random() * 250;
 
           this.logger.log(
             `${isTPMLimit ? 'TPM 限制' : '正常'} - 等待 ${delay / 1000} 秒后重试...`,
@@ -58,9 +60,8 @@ export class AiService {
       }
     }
 
-    // 降级策略：返回兜底响应
-    this.logger.error(`AI 调用完全失败，使用降级响应: ${lastError?.message}`);
-    return this.getFallbackResponse(text);
+    this.logger.error(`AI 调用完全失败: ${lastError?.message}`);
+    throw lastError || new Error('AI 调用失败');
   }
 
   private async fetchWithTimeout(text: string): Promise<string> {
@@ -78,8 +79,9 @@ export class AiService {
     }
 
     // 超时控制
+    const timeout = this.getNumber('AI_TIMEOUT_MS', 45000);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
       const response = await fetch(
@@ -128,7 +130,7 @@ export class AiService {
       clearTimeout(timeoutId);
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
-          throw new Error(`AI 调用超时 (${this.timeout}ms)`);
+          throw new Error(`AI 调用超时 (${timeout}ms)`);
         }
         throw error;
       }
@@ -136,16 +138,12 @@ export class AiService {
     }
   }
 
-  private getFallbackResponse(text: string): string {
-    // 简单的降级响应逻辑
-    if (text.includes('你好') || text.includes('hello')) {
-      return '你好！我是 Zeno，你的多端协同指挥官，负责需求→规划→生成→同步→汇报的全链路自动化。';
-    } else if (text.includes('文档') || text.includes('doc')) {
-      return '我理解你需要文档相关的帮助。请稍后重试，系统正在处理中。';
-    } else if (text.includes('演示') || text.includes('ppt')) {
-      return '我理解你需要演示相关的帮助。请稍后重试，系统正在处理中。';
-    } else {
-      return '系统暂时无法处理你的请求，请稍后重试。';
+  private getNumber(key: string, fallback: number): number {
+    const raw = this.configService.get<string | number>(key);
+    if (raw === undefined || raw === null || raw === '') {
+      return fallback;
     }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
 }
