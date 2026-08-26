@@ -19,6 +19,11 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "eval:intent": "ts-node test/eval/intent-eval.ts",
+    "eval:first-response": "ts-node test/eval/first-response-eval.ts",
+    "eval:fault": "ts-node test/eval/fault-injection-eval.ts",
+    "eval:context": "ts-node test/eval/context-hit-eval.ts",
+    "eval": "ts-node test/eval/run-all.ts",
     "prepare": "husky"
   },
   "lint-staged": {
